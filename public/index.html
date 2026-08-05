@@ -664,7 +664,7 @@ function renderPosition(p, market) {
         <div class="hint">${pnl.ageDays != null ? "возраст: " + pnl.ageDays.toFixed(1) + " дн." : ""}</div></div>
       <div class="kv"><div class="lbl">Расчётный fee за 24ч</div>
         <div class="val ${cls(dailyFeesUsd)}">${fmtUsd(dailyFeesUsd, 4)}</div>
-        <div class="hint">собрано+выведено: ${fmtUsd(pnl.collectedYieldUsd + pnl.withdrawnValueUsd)} · сеть: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
+        <div class="hint">сетевые комиссии: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
       <div class="kv"><div class="lbl">PnL всего</div>
         <div class="val ${cls(pnl.totalPnlUsd)}">${fmtSigned(pnl.totalPnlUsd)}</div>
         <div class="hint">реализованная доходность: ${pnl.realizedAprPct == null ? "н/д" : pnl.realizedAprPct.toFixed(1) + "% годовых"}</div></div>
