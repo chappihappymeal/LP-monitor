@@ -19,6 +19,14 @@ import {
   buildMarketState,
 } from "./lib/advice.js";
 import { computeTA, suggestRange } from "./lib/ta.js";
+import {
+  fetchWalletUsd,
+  getSyncState,
+  journalSummary,
+  saveComment,
+  snapshotBalance,
+  startSync,
+} from "./lib/journal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -74,6 +82,17 @@ app.get("/api/positions", async (req, res) => {
     const walletAdvice = noPositions ? adviseNoPosition(market!) : null;
     const walletAlternatives = noPositions ? adviseAlternatives(null, market!) : null;
     res.json({ wallet, positions: out, market, walletAdvice, walletAlternatives, fetchedAt: Date.now() });
+
+    // Снапшот баланса для журнала: кошелёк + позиции + несобранные комиссии
+    // (pending в Orca уже нетто — протокольная доля вычтена на уровне пула).
+    try {
+      const positionsUsd = out.reduce((s: number, p: any) => s + (p.valueUsd ?? 0), 0);
+      const pendingUsd = out.reduce((s: number, p: any) => s + (p.pendingYieldUsd ?? 0), 0);
+      const walletUsd = await fetchWalletUsd(rpc, wallet, market?.price ?? null);
+      snapshotBalance(wallet, walletUsd, positionsUsd, pendingUsd);
+    } catch (e) {
+      console.warn("balance snapshot failed:", e);
+    }
   } catch (e: any) {
     console.error("positions error:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -142,6 +161,40 @@ app.get("/api/candles", async (req, res) => {
     console.error("candles error:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
+});
+
+// ── Журнал сделок ───────────────────────────────────────────────────────────
+app.get("/api/journal", (req, res) => {
+  const wallet = req.query.wallet;
+  if (!isValidAddress(wallet)) {
+    res.status(400).json({ error: "Некорректный адрес кошелька" });
+    return;
+  }
+  try {
+    const sync = startSync(rpc, wallet); // фоновый синк, ответ не ждёт
+    const summary = journalSummary(wallet);
+    res.json({
+      wallet,
+      syncing: sync.running,
+      processed: sync.processed,
+      syncError: sync.error,
+      syncedAt: sync.finishedAt,
+      ...summary,
+    });
+  } catch (e: any) {
+    console.error("journal error:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/journal/comment", (req, res) => {
+  const { wallet, signature, comment } = req.body ?? {};
+  if (!isValidAddress(wallet) || typeof signature !== "string" || typeof comment !== "string") {
+    res.status(400).json({ error: "Нужны wallet, signature и comment" });
+    return;
+  }
+  if (saveComment(wallet, signature, comment)) res.json({ ok: true });
+  else res.status(404).json({ error: "Событие не найдено в журнале" });
 });
 
 // Дотяжка store фоном: при старте и раз в 15 минут (внутри — троттлинг 10 мин).

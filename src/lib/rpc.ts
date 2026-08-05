@@ -9,10 +9,11 @@ import { RPC_URL, RPC_URL_SECONDARY } from "../config.js";
 
 // Публичные RPC имеют разные ограничения:
 //  - api.mainnet-beta.solana.com жёстко лимитирует getTransaction;
-//  - solana-rpc.publicnode.com блокирует getTokenAccountsByOwner(programId).
-// Поэтому тяжёлые исторические методы уходят на вторичный эндпоинт (если задан),
-// плюс общий пейсинг и повторы с экспоненциальной задержкой на 429/5xx.
-const HISTORY_METHODS = new Set(["getTransaction", "getSignaturesForAddress"]);
+//  - solana-rpc.publicnode.com блокирует getTokenAccountsByOwner(programId)
+//    и хранит неполный исторический индекс (старые подписи/транзакции пусты).
+// Поэтому getTransaction уходит на вторичный эндпоинт с фолбэком на первичный
+// при пустом ответе, плюс общий пейсинг и повторы с экспоненциальной задержкой.
+const HISTORY_METHODS = new Set(["getTransaction"]);
 
 const PACING_MS = 120;
 const MAX_RETRIES = 5;
@@ -42,7 +43,13 @@ export function makeRpc(): Rpc<SolanaRpcApi> {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       await pace();
       try {
-        return await chosen(config);
+        const res: any = await chosen(config);
+        // Вторичный узел может не хранить старую транзакцию — добираем с первичного.
+        if (useSecondary && res?.result == null) {
+          await pace();
+          return (await primary(config)) as any;
+        }
+        return res;
       } catch (e: any) {
         lastErr = e;
         const status = e?.context?.statusCode;

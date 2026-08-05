@@ -62,6 +62,26 @@
   table.simres tr.total td { border-top: 2px solid var(--border); font-weight: 700; }
   .notes { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
   .notes li { margin-bottom: 4px; }
+  .tabs { display: flex; gap: 8px; margin: 16px 0; }
+  .tabs button { cursor: pointer; border-radius: 20px; padding: 8px 18px; font-weight: 600; }
+  .tabs button.active { background: #1f6feb; border-color: #1f6feb; }
+  table.jrnl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.jrnl th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 600;
+    padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.jrnl td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.jrnl td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .jbadge { font-size: 11.5px; padding: 2px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
+  .jbadge.deposit { background: #12341f; color: var(--green); }
+  .jbadge.withdraw { background: #3d1418; color: var(--red); }
+  .jbadge.open, .jbadge.increase { background: #1c2b40; color: var(--accent); }
+  .jbadge.close, .jbadge.decrease { background: #3d2300; color: var(--yellow); }
+  .jbadge.collect { background: #10333a; color: #46c8d8; }
+  .jbadge.swap { background: #2b1d3a; color: #c792ea; }
+  .jbadge.other { background: var(--panel2); color: var(--muted); }
+  td.cmt { cursor: pointer; min-width: 180px; max-width: 340px; color: var(--text); }
+  td.cmt .empty { opacity: .45; }
+  td.cmt textarea { width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px; font: inherit; }
   .err { background: #3d1418; border: 1px solid var(--red); color: #ffb3ad;
     border-radius: 8px; padding: 12px; margin: 14px 0; white-space: pre-wrap; }
   .market { display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
@@ -113,7 +133,17 @@
     <span id="updatedAt" style="align-self:center;color:var(--muted);font-size:12px"></span>
   </div>
 
-  <div id="out"></div>
+  <div class="tabs" id="tabs">
+    <button data-tab="positions" class="active">Позиции</button>
+    <button data-tab="journal">Журнал</button>
+  </div>
+
+  <div id="tab-positions">
+    <div id="out"></div>
+  </div>
+  <div id="tab-journal" hidden>
+    <div id="journalout"><div class="chartnote">Введи кошелёк и открой вкладку — журнал соберётся из истории транзакций.</div></div>
+  </div>
 </div>
 
 <script src="/vendor/lightweight-charts.standalone.production.js"></script>
@@ -133,7 +163,7 @@ const fmtPct = (v, d = 2) => v == null ? "н/д" : v.toFixed(d) + "%";
 const cls = v => v == null ? "" : v >= 0 ? "pos" : "neg";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-$("#load").onclick = () => load();
+$("#load").onclick = () => ($("#tab-journal").hidden ? load() : loadJournal());
 walletInput.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
 
 // ── Автообновление ──
@@ -155,12 +185,25 @@ async function refreshTick() {
   if (refreshing || document.hidden) return; // не накладываемся и не молотим в фоновой вкладке
   refreshing = true;
   try {
-    if (walletInput.value.trim()) await load(true);
+    if (!walletInput.value.trim()) return;
+    if (!$("#tab-journal").hidden) await loadJournal(true);
+    else await load(true);
   } finally {
     refreshing = false;
   }
 }
 applyRefresh();
+
+// ── Вкладки ──
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  for (const el of document.querySelectorAll("#tabs button"))
+    el.classList.toggle("active", el === b);
+  $("#tab-positions").hidden = b.dataset.tab !== "positions";
+  $("#tab-journal").hidden = b.dataset.tab !== "journal";
+  if (b.dataset.tab === "journal" && walletInput.value.trim()) loadJournal();
+});
 
 function stampUpdated() {
   $("#updatedAt").textContent = "обновлено " + new Date().toLocaleTimeString("ru-RU");
@@ -168,6 +211,116 @@ function stampUpdated() {
 
 const fmtSignedPct = (v, d = 2) => v == null ? "н/д" :
   (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d) + "%";
+
+// ── Журнал сделок ──
+const JTYPE_RU = {
+  deposit: "поступление", withdraw: "вывод", swap: "свап", open: "вход LP",
+  increase: "довнесение", decrease: "изъятие", close: "выход LP",
+  collect: "сбор комиссий", other: "прочее",
+};
+
+async function loadJournal(silent = false) {
+  const wallet = walletInput.value.trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) return;
+  const jo = $("#journalout");
+  // Не перерисовываем, пока открыт редактор комментария.
+  if (silent && jo.querySelector("textarea")) return;
+  if (!silent && !jo.querySelector("table"))
+    jo.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю журнал…</div>';
+  try {
+    const res = await fetch(`/api/journal?wallet=${wallet}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    jo.innerHTML = renderJournal(data);
+    stampUpdated();
+  } catch (e) {
+    if (silent) console.warn("журнал:", e);
+    else jo.innerHTML = `<div class="err">Ошибка журнала: ${esc(e.message || e)}</div>`;
+  }
+}
+
+function renderJournal(d) {
+  const b = d.balance;
+  let html = `<div class="summary">
+    <div class="stat"><div class="lbl">Баланс (кошелёк + позиции + несобранные fee)</div>
+      <div class="val">${b ? fmtUsd(b.totalUsd) : "н/д"}</div>
+      ${b ? `<div class="lbl">кошелёк ${fmtUsd(b.walletUsd, 0)} · позиции ${fmtUsd(b.positionsUsd, 0)} · fee ${fmtUsd(b.pendingUsd)}</div>` : '<div class="lbl">появится после загрузки «Позиций»</div>'}</div>
+    <div class="stat"><div class="lbl">Чистая прибыль с начала</div>
+      <div class="val ${cls(d.pnlSinceStartUsd)}">${fmtSigned(d.pnlSinceStartUsd)}</div>
+      <div class="lbl">внесено нетто: ${fmtUsd(d.netDepositedUsd)}</div></div>
+    <div class="stat"><div class="lbl">За 7 дней</div>
+      <div class="val ${cls(d.changes.d7)}">${fmtSigned(d.changes.d7)}</div></div>
+    <div class="stat"><div class="lbl">За 30 дней</div>
+      <div class="val ${cls(d.changes.d30)}">${fmtSigned(d.changes.d30)}</div></div>
+  </div>`;
+
+  if (d.syncing)
+    html += `<div class="chartnote"><span class="spin">⟳</span> Синхронизация истории… обработано транзакций: ${d.processed}. Журнал пополняется, обнови через минуту.</div>`;
+  if (d.syncError)
+    html += `<div class="err">Синк прервался: ${esc(d.syncError)} — продолжится при следующем обновлении.</div>`;
+
+  if (!d.events.length) {
+    html += '<div class="card">Событий пока нет.</div>';
+    return html;
+  }
+
+  const rows = d.events.map(e => {
+    const dt = e.blockTime ? new Date(e.blockTime * 1000).toLocaleString("ru-RU",
+      { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+    const parts = [];
+    if (Math.abs(e.solDelta) > 1e-9)
+      parts.push(`<span class="${cls(e.solDelta)}">${e.solDelta > 0 ? "+" : ""}${fmtNum(e.solDelta, 4)} SOL</span>`);
+    for (const [sym, v] of Object.entries(e.tokenDeltas ?? {}))
+      parts.push(`<span class="${cls(v)}">${v > 0 ? "+" : ""}${fmtNum(v, 2)} ${esc(sym)}</span>`);
+    const range = e.range ? `${fmtNum(e.range.lower, 2)} — ${fmtNum(e.range.upper, 2)}` : "—";
+    const cmt = e.comment
+      ? esc(e.comment)
+      : '<span class="empty">＋ комментарий…</span>';
+    return `<tr>
+      <td class="num">${dt}</td>
+      <td><span class="jbadge ${e.type}">${JTYPE_RU[e.type] ?? e.type}</span></td>
+      <td>${parts.join("<br>") || "—"}${e.valueUsd != null ? `<br><span style="color:var(--muted)">≈ ${fmtUsd(e.valueUsd)}</span>` : ""}</td>
+      <td class="num">${range}</td>
+      <td class="num">${e.priceUsd != null ? "$" + fmtNum(e.priceUsd, 2) : "—"}</td>
+      <td class="num">${e.feeSol != null ? fmtNum(e.feeSol, 6) : "—"}</td>
+      <td class="cmt" data-sig="${esc(e.signature)}" data-comment="${esc(e.comment ?? "")}">${cmt}</td>
+    </tr>`;
+  }).join("");
+
+  html += `<div class="card" style="overflow-x:auto"><table class="jrnl">
+    <tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Диапазон</th><th>Цена SOL</th><th>Fee, SOL</th><th>Комментарий</th></tr>
+    ${rows}
+  </table></div>`;
+  return html;
+}
+
+// Инлайн-редактирование комментария
+$("#journalout").addEventListener("click", async e => {
+  const cell = e.target.closest("td.cmt");
+  if (!cell || cell.querySelector("textarea")) return;
+  const sig = cell.dataset.sig;
+  const cur = cell.dataset.comment || "";
+  cell.innerHTML = `<textarea rows="2" placeholder="Почему принято решение…"></textarea>
+    <button class="primary" style="margin-top:4px;font-size:12px;padding:4px 12px">Сохранить</button>`;
+  const ta = cell.querySelector("textarea");
+  ta.value = cur;
+  ta.focus();
+  cell.querySelector("button").onclick = async ev => {
+    ev.stopPropagation();
+    try {
+      const res = await fetch("/api/journal/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: walletInput.value.trim(), signature: sig, comment: ta.value }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      cell.dataset.comment = ta.value;
+      cell.innerHTML = ta.value ? esc(ta.value) : '<span class="empty">＋ комментарий…</span>';
+    } catch (err) {
+      alert("Не сохранилось: " + (err.message || err));
+    }
+  };
+});
 
 async function load(silent = false) {
   const wallet = walletInput.value.trim();
