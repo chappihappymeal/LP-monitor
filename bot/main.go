@@ -14,6 +14,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -75,6 +77,16 @@ func main() {
 	}
 	log.Printf("бот %s запущен, разрешён TG ID %d", bot.Self.UserName, cfg.allowedID)
 
+	// SELFTEST=1: одноразовая проверка всей цепочки (страница → chrome →
+	// скриншот → фото в чат) без нажатия кнопки. Запуск:
+	//   docker compose run --rm -e SELFTEST=1 bot
+	if os.Getenv("SELFTEST") == "1" {
+		log.Print("selftest: снимаю скриншот…")
+		handleStats(bot, cfg.allowedID, cfg)
+		log.Print("selftest: завершён")
+		return
+	}
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	for update := range bot.GetUpdatesChan(u) {
@@ -126,11 +138,22 @@ func screenshotPositions(cfg config) ([]byte, error) {
 	ctx, cancelTimeout := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancelTimeout()
 
-	url := cfg.appURL + "/?wallet=" + cfg.wallet
+	// Хостнейм резолвим в IP: URL с IP-литералом Chrome не апгрейдит до
+	// https (авто-апгрейд http→https ломался об ERR_SSL_PROTOCOL_ERROR).
+	pageURL := cfg.appURL + "/?wallet=" + cfg.wallet
+	if u, err := url.Parse(cfg.appURL); err == nil {
+		host := u.Hostname()
+		if net.ParseIP(host) == nil {
+			if addrs, err := net.LookupHost(host); err == nil && len(addrs) > 0 {
+				pageURL = fmt.Sprintf("%s://%s/?wallet=%s",
+					u.Scheme, net.JoinHostPort(addrs[0], u.Port()), cfg.wallet)
+			}
+		}
+	}
 	var buf []byte
 	err := chromedp.Run(ctx,
 		chromedp.EmulateViewport(1280, 900),
-		chromedp.Navigate(url),
+		chromedp.Navigate(pageURL),
 		chromedp.Poll(
 			`document.querySelector('#out .card, #out .err') !== null`,
 			nil,
