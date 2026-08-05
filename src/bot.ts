@@ -31,7 +31,7 @@ import { RPC_URL } from "./config.js";
 
 const POOL = process.env.POOL ?? "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"; // SOL/USDC 0.04%
 const CEX_PRODUCT = process.env.CEX_PRODUCT ?? "SOL-USD";
-const WIDTH_PCT = Number(process.env.WIDTH_PCT ?? 5);
+const WIDTH_PCT = Number(process.env.WIDTH_PCT ?? 12);
 const VOL_PAUSE = Number(process.env.VOL_PAUSE ?? 5); // %/день — закрыться
 const VOL_RESUME = Number(process.env.VOL_RESUME ?? 4); // %/день — можно заходить
 const INTERVAL_MIN = Number(process.env.INTERVAL_MIN ?? 5);
