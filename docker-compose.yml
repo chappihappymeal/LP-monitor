@@ -19,14 +19,10 @@ services:
     restart: unless-stopped
     init: true
     shm_size: 1gb
-    # Дефолтные флаги образа + отключение авто-апгрейда http→https:
-    # без него навигация на http://app:3000 падает с ERR_SSL_PROTOCOL_ERROR.
+    # Только ДОПОЛНИТЕЛЬНЫЕ флаги: run.sh образа сам запускает headless-shell
+    # (порт 9223 + socat на 9222) и добавляет наши аргументы в конец.
+    # Без HttpsUpgrades навигация на http://app:3000 падала с ERR_SSL_PROTOCOL_ERROR.
     command:
-      - --no-sandbox
-      - --use-gl=angle
-      - --use-angle=swiftshader
-      - --remote-debugging-address=0.0.0.0
-      - --remote-debugging-port=9222
       - --hide-scrollbars
       - --disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable
 
