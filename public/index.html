@@ -62,6 +62,12 @@
   table.simres tr.total td { border-top: 2px solid var(--border); font-weight: 700; }
   .notes { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
   .notes li { margin-bottom: 4px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tabs button { cursor: pointer; border-radius: 20px; padding: 8px 18px; font-weight: 600; }
+  .tabs button.active { background: #1f6feb; border-color: #1f6feb; }
+  .badge.storm { background: #3d1418; color: var(--red); }
+  .card.stub { opacity: .55; }
+  .card.stub .notes { margin-top: 6px; }
   .err { background: #3d1418; border: 1px solid var(--red); color: #ffb3ad;
     border-radius: 8px; padding: 12px; margin: 14px 0; white-space: pre-wrap; }
   .loading { color: var(--muted); margin: 20px 0; }
@@ -74,12 +80,26 @@
   <h1>🌊 LP Monitor — Orca Whirlpools</h1>
   <div class="sub">Мониторинг концентрированных позиций: состав, pending yield, PnL и симуляция ребаланса</div>
 
-  <div class="row">
-    <input id="wallet" placeholder="Паблик-адрес кошелька (Solana)" spellcheck="false">
-    <button class="primary" id="load">Загрузить</button>
+  <div class="tabs" id="tabs">
+    <button data-tab="positions" class="active">Позиции</button>
+    <button data-tab="market">Рынок</button>
   </div>
 
-  <div id="out"></div>
+  <div id="tab-positions">
+    <div class="row">
+      <input id="wallet" placeholder="Паблик-адрес кошелька (Solana)" spellcheck="false">
+      <button class="primary" id="load">Загрузить</button>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+  <div id="tab-market" hidden>
+    <div class="row" style="justify-content:flex-end">
+      <button class="primary" id="marketRefresh">Обновить</button>
+    </div>
+    <div id="marketout"></div>
+  </div>
 </div>
 
 <script>
@@ -100,6 +120,72 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 
 $("#load").onclick = load;
 walletInput.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+
+// ── Вкладки ──
+let marketLoaded = false;
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  for (const el of document.querySelectorAll("#tabs button"))
+    el.classList.toggle("active", el === b);
+  $("#tab-positions").hidden = b.dataset.tab !== "positions";
+  $("#tab-market").hidden = b.dataset.tab !== "market";
+  if (b.dataset.tab === "market" && !marketLoaded) loadMarket();
+});
+$("#marketRefresh").onclick = loadMarket;
+
+const fmtSignedPct = (v, d = 2) => v == null ? "н/д" :
+  (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d) + "%";
+
+async function loadMarket() {
+  marketLoaded = true;
+  const mo = $("#marketout");
+  $("#marketRefresh").disabled = true;
+  mo.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю свечи и считаю волатильность…</div>';
+  try {
+    const res = await fetch("/api/market");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    mo.innerHTML = data.coins.map(renderCoin).join("");
+  } catch (e) {
+    mo.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
+  } finally {
+    $("#marketRefresh").disabled = false;
+  }
+}
+
+function renderCoin(c) {
+  if (!c.filled) return `<div class="card stub">
+    <h2>${esc(c.symbol)}</h2>
+    <div class="notes">Не заполнено</div>
+  </div>`;
+  if (c.error) return `<div class="card">
+    <h2>${esc(c.symbol)}</h2>
+    <div class="err">${esc(c.error)}</div>
+  </div>`;
+  const [vCls, vTxt] = { ok: ["in", "можно в LP"], cooldown: ["out", "остываем"],
+    storm: ["storm", "шторм — пауза"] }[c.verdict] ?? ["out", c.verdict];
+  const lo = c.price * (1 - c.recommendedRangePct / 100);
+  const hi = c.price * (1 + c.recommendedRangePct / 100);
+  return `<div class="card">
+    <h2>${esc(c.symbol)} <span class="badge ${vCls}">${vTxt}</span></h2>
+    <div class="grid">
+      <div class="kv"><div class="lbl">Цена</div>
+        <div class="val">${fmtUsd(c.price)}</div>
+        <div class="hint">24ч: <span class="${cls(c.change24hPct)}">${fmtSignedPct(c.change24hPct)}</span>
+          · 7д: <span class="${cls(c.change7dPct)}">${fmtSignedPct(c.change7dPct)}</span></div></div>
+      <div class="kv"><div class="lbl">Волатильность 48ч (по ней судит бот)</div>
+        <div class="val">${fmtPct(c.vol48hPct, 1)}/день</div>
+        <div class="hint">24ч: ${fmtPct(c.vol24hPct, 1)} · 7д: ${fmtPct(c.vol7dPct, 1)}</div></div>
+      <div class="kv"><div class="lbl">Рекомендуемый диапазон</div>
+        <div class="val">±${c.recommendedRangePct}%</div>
+        <div class="hint">${fmtNum(lo, 2)} — ${fmtNum(hi, 2)}</div></div>
+      <div class="kv"><div class="lbl">Пороги бота</div>
+        <div class="val">пауза &gt; ${c.volPausePct}% · вход &lt; ${c.volResumePct}%</div>
+        <div class="hint">волатильность в %/день</div></div>
+    </div>
+  </div>`;
+}
 
 async function load() {
   const wallet = walletInput.value.trim();

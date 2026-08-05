@@ -11,6 +11,7 @@ import {
 } from "./lib/positions.js";
 import { computePnl } from "./lib/history.js";
 import { simulateRebalance } from "./lib/simulate.js";
+import { fetchHourlyCandles, realizedVolDaily } from "./lib/candles.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -89,6 +90,55 @@ app.post("/api/simulate", async (req, res) => {
     console.error("simulate error:", e);
     res.status(400).json({ error: e?.message ?? String(e) });
   }
+});
+
+// ── Вкладка «Рынок»: волатильность и вердикт бота ───────────────────────────
+// Пороги и ширина — те же env-переменные и дефолты, что в bot.ts.
+const VOL_PAUSE = Number(process.env.VOL_PAUSE ?? 5); // %/день — пауза
+const VOL_RESUME = Number(process.env.VOL_RESUME ?? 4); // %/день — можно заходить
+const WIDTH_PCT = Number(process.env.WIDTH_PCT ?? 12);
+const MARKET_STUBS = ["ETH", "BTC", "ORCA", "JUP"];
+
+let marketCache: { at: number; data: unknown } | null = null;
+
+app.get("/api/market", async (_req, res) => {
+  if (marketCache && Date.now() - marketCache.at < 10 * 60_000) {
+    res.json(marketCache.data);
+    return;
+  }
+  let sol: Record<string, unknown>;
+  try {
+    const candles = await fetchHourlyCandles("SOL-USD", 7);
+    const last = candles.length - 1;
+    const closeAgo = (h: number) => candles[Math.max(0, last - h)].close;
+    const changePct = (h: number) => (candles[last].close / closeAgo(h) - 1) * 100;
+    const volPct = (h: number) => realizedVolDaily(candles, last, h) * 100;
+    const vol48 = volPct(48);
+    sol = {
+      symbol: "SOL",
+      filled: true,
+      product: "SOL-USD",
+      price: candles[last].close,
+      change24hPct: changePct(24),
+      change7dPct: changePct(24 * 7),
+      vol24hPct: volPct(24),
+      vol48hPct: vol48,
+      vol7dPct: volPct(24 * 7),
+      verdict: vol48 > VOL_PAUSE ? "storm" : vol48 < VOL_RESUME ? "ok" : "cooldown",
+      recommendedRangePct: WIDTH_PCT,
+      volPausePct: VOL_PAUSE,
+      volResumePct: VOL_RESUME,
+    };
+  } catch (e: any) {
+    console.error("market error:", e);
+    sol = { symbol: "SOL", filled: true, error: e?.message ?? String(e) };
+  }
+  const data = {
+    fetchedAt: Date.now(),
+    coins: [sol, ...MARKET_STUBS.map((symbol) => ({ symbol, filled: false }))],
+  };
+  if (!("error" in sol)) marketCache = { at: Date.now(), data };
+  res.json(data);
 });
 
 app.listen(PORT, () => {
