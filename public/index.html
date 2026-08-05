@@ -64,6 +64,23 @@
   .notes li { margin-bottom: 4px; }
   .err { background: #3d1418; border: 1px solid var(--red); color: #ffb3ad;
     border-radius: 8px; padding: 12px; margin: 14px 0; white-space: pre-wrap; }
+  .market { display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; margin: 16px 0 6px; font-size: 13.5px; color: var(--muted); }
+  .market b { color: var(--text); }
+  .regime { font-weight: 700; padding: 2px 10px; border-radius: 20px; font-size: 12.5px; }
+  .regime.calm { background: #12341f; color: var(--green); }
+  .regime.normal { background: #1c2b40; color: var(--accent); }
+  .regime.trend-up { background: #10333a; color: #46c8d8; }
+  .regime.risk-off, .regime.storm { background: #3d1418; color: var(--red); }
+  .advice { display: flex; gap: 10px; border-radius: 10px; padding: 12px 14px; margin: 12px 0;
+    font-size: 14px; line-height: 1.45; border: 1px solid; }
+  .advice.low { background: #14231a; border-color: #2a5c3f; }
+  .advice.medium { background: #33270e; border-color: #7a5c1e; }
+  .advice.high { background: #3d1418; border-color: var(--red); }
+  .advice .icon { font-size: 18px; }
+  .advice .a-action { font-weight: 700; }
+  .advice .a-give { color: var(--muted); font-size: 13px; margin-top: 3px; }
   .loading { color: var(--muted); margin: 20px 0; }
   .spin { display: inline-block; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -122,11 +139,35 @@ async function load() {
   }
 }
 
+const REGIME_RU = { "risk-off": "RISK-OFF", storm: "ШТОРМ", "trend-up": "ТРЕНД ВВЕРХ", calm: "ШТИЛЬ", normal: "НЕЙТРАЛЬНО" };
+
+function marketBar(m) {
+  if (!m) return "";
+  return `<div class="market">
+    <span class="regime ${m.regime}">${REGIME_RU[m.regime] ?? m.regime}</span>
+    <span>SOL: <b>$${m.price.toFixed(2)}</b></span>
+    <span>вола 48ч: <b>${m.vol48hPct.toFixed(2)}%/д</b></span>
+    <span>тренд 72ч: <b>${m.trend72hPct >= 0 ? "+" : ""}${m.trend72hPct.toFixed(1)}%</b></span>
+    <span>от 30-дн максимума: <b>−${m.drawdownFrom30dHighPct.toFixed(1)}%</b></span>
+  </div>`;
+}
+
+function adviceBlock(a) {
+  if (!a) return "";
+  const icon = a.urgency === "high" ? "🚨" : a.urgency === "medium" ? "⚠️" : "✅";
+  const cost = a.costUsd == null ? "" : a.costUsd < 0.005 ? " · стоимость: $0" : ` · стоимость: ~$${a.costUsd.toFixed(2)}`;
+  return `<div class="advice ${a.urgency}"><span class="icon">${icon}</span><div>
+    <div class="a-action">${esc(a.action)}${cost}</div>
+    <div class="a-give">${esc(a.gives)}</div>
+  </div></div>`;
+}
+
 function render(data) {
   const ps = data.positions.filter(p => !p.error);
   const errs = data.positions.filter(p => p.error);
   if (ps.length === 0 && errs.length === 0) {
-    out.innerHTML = '<div class="card">На этом кошельке позиций Orca Whirlpools не найдено.</div>';
+    out.innerHTML = marketBar(data.market) + adviceBlock(data.walletAdvice) +
+      '<div class="card">На этом кошельке позиций Orca Whirlpools не найдено.</div>';
     return;
   }
   // Суммируем по позициям, у которых значение посчитано; если ни одной — н/д.
@@ -139,7 +180,7 @@ function render(data) {
   const totalPnl = sum(p => p.pnl?.totalPnlUsd);
   const totalHodl = sum(p => p.pnl?.vsHodlUsd);
 
-  let html = `<div class="summary">
+  let html = marketBar(data.market) + `<div class="summary">
     <div class="stat"><div class="lbl">Стоимость позиций</div><div class="val">${fmtUsd(totalValue)}</div></div>
     <div class="stat"><div class="lbl">Pending yield</div><div class="val ${cls(totalYield)}">${fmtUsd(totalYield, 4)}</div></div>
     <div class="stat"><div class="lbl">PnL всего</div><div class="val ${cls(totalPnl)}">${fmtSigned(totalPnl)}</div></div>
@@ -170,6 +211,7 @@ function renderPosition(p) {
   return `<div class="card" id="card-${p.positionAddress}">
     <h2>${esc(p.pair)} · ${p.feeRatePct}% <span class="badge ${inRange ? "in" : "out"}">${statusTxt}</span></h2>
     <div class="addr">${esc(p.positionAddress)}</div>
+    ${adviceBlock(p.advice)}
 
     <div class="rangebar">
       <div class="band" style="left:${pct(p.lowerPrice)}%; width:${pct(p.upperPrice) - pct(p.lowerPrice)}%"></div>

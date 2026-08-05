@@ -22,6 +22,7 @@ import { fetchPoolDoc } from "./lib/orcaApi.js";
 
 const DEFAULT_POOL = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 const args = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+const MIRROR = process.argv.includes("--mirror"); // зеркальный рынок: инвертируем доходности
 const DAYS = Number(args[0]) || 365;
 const VALUE_USD = Number(args[1]) || 320;
 const POOL = args[2] ?? DEFAULT_POOL;
@@ -235,13 +236,32 @@ function run(
 }
 
 // ── Данные ──────────────────────────────────────────────────────────────────
-const [doc, candles, fundingPts] = await Promise.all([
+const [doc, candlesRaw, fundingPts] = await Promise.all([
   fetchPoolDoc(POOL),
   fetchHourlyCandles("SOL-USD", DAYS + 30), // +30 дней на прогрев трейлинг-окна
   fetchFundingHistory("SOL", DAYS + 30),
 ]);
 if (!doc) throw new Error("Orca API недоступен");
-const fundingRates = fundingByHour(fundingPts);
+
+// Зеркальный рынок: p' = p0²/p инвертирует каждую лог-доходность
+// (high/low меняются местами); знак фандинга тоже инвертируем — в бычьем
+// рынке лонги платят шортам. Объёмы оставляем как есть.
+const candles = MIRROR
+  ? (() => {
+      const b = candlesRaw[0].close;
+      return candlesRaw.map((c) => ({
+        time: c.time,
+        open: (b * b) / c.open,
+        high: (b * b) / c.low,
+        low: (b * b) / c.high,
+        close: (b * b) / c.close,
+        volumeUsd: c.volumeUsd,
+      }));
+    })()
+  : candlesRaw;
+const fundingRates = fundingByHour(
+  MIRROR ? fundingPts.map((f) => ({ ...f, rate: -f.rate })) : fundingPts,
+);
 const trailHigh = rollingMax(candles, TRAIL_WINDOW_H);
 
 const cex7dVol = candles.slice(-168).reduce((s, c) => s + c.volumeUsd, 0);
