@@ -151,7 +151,9 @@
 const $ = (s, el = document) => el.querySelector(s);
 const out = $("#out");
 const walletInput = $("#wallet");
-walletInput.value = localStorage.getItem("lpmon_wallet") || "";
+// ?wallet=… в URL (для бота/шаринга) имеет приоритет над сохранённым.
+walletInput.value = new URLSearchParams(location.search).get("wallet") ||
+  localStorage.getItem("lpmon_wallet") || "";
 
 const fmtUsd = (v, d = 2) => v == null ? "н/д" :
   (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
