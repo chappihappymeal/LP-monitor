@@ -9,7 +9,8 @@
     "backtest": "tsx src/backtest.ts",
     "backtest:history": "tsx src/backtest-history.ts",
     "bot": "tsx src/bot.ts",
-    "backtest:hedge": "tsx src/backtest-hedge.ts"
+    "backtest:hedge": "tsx src/backtest-hedge.ts",
+    "backtest:guard": "tsx src/backtest-guard.ts"
   },
   "repository": {
     "type": "git",
