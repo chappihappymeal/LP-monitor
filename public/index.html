@@ -285,7 +285,11 @@ function renderJournal(d) {
       : '<span class="empty">＋ комментарий…</span>';
     return `<tr>
       <td class="num">${dt}</td>
-      <td><span class="jbadge ${e.type}">${JTYPE_RU[e.type] ?? e.type}</span></td>
+      <td><span class="jbadge ${e.type}">${JTYPE_RU[e.type] ?? e.type}</span>${
+        e.groupedTypes?.length
+          ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">вкл. ${[...new Set(e.groupedTypes)].map(t => JTYPE_RU[t] ?? t).join(", ")}</div>`
+          : ""
+      }</td>
       <td>${parts.join("<br>") || "—"}${e.valueUsd != null ? `<br><span style="color:var(--muted)">≈ ${fmtUsd(e.valueUsd)}</span>` : ""}</td>
       <td class="num ${bdCls}">${bdTxt}</td>
       <td class="num">${ba == null ? "н/д" : fmtUsd(ba, 2)}</td>

@@ -573,6 +573,77 @@ function flowUsd(e: JournalEvent): number | null {
   return (e.solDelta - (e.feeSol ?? 0)) * e.priceUsd + stableOf(e);
 }
 
+// Группировка: свапы и пыль (<$1) в пределах ±3 минут от LP-события — части
+// той же операции (подготовка входа/выхода). Сливаются в одну строку: суммы
+// объединяются, эпизодная дельта включает свап-издержки.
+export interface GroupedEvent extends JournalEvent {
+  groupedTypes?: JournalEventType[]; // типы влитых событий
+  extraSol?: number; // потоки влитых событий — для снимка баланса
+  extraStable?: number;
+}
+
+const LP_TYPES = new Set<JournalEventType>(["open", "increase", "decrease", "close", "collect"]);
+const GROUP_WINDOW_SEC = 180;
+
+function groupEvents(events: JournalEvent[]): GroupedEvent[] {
+  const lpIdx = events.map((e, i) => (LP_TYPES.has(e.type) ? i : -1)).filter((i) => i >= 0);
+  const host = new Map<number, number>();
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (LP_TYPES.has(e.type) || e.blockTime == null) continue;
+    const dust = e.type === "withdraw" && (e.valueUsd ?? 0) < 1;
+    if (!(e.type === "swap" || e.type === "other" || dust)) continue;
+    let best = -1;
+    let bestDt = GROUP_WINDOW_SEC + 1;
+    for (const li of lpIdx) {
+      const lt = events[li].blockTime;
+      if (lt == null) continue;
+      const dt = Math.abs(lt - e.blockTime);
+      if (dt < bestDt) {
+        bestDt = dt;
+        best = li;
+      }
+    }
+    if (best >= 0) host.set(i, best);
+  }
+  const kidsOf = new Map<number, number[]>();
+  for (const [c, h] of host) {
+    if (!kidsOf.has(h)) kidsOf.set(h, []);
+    kidsOf.get(h)!.push(c);
+  }
+  const out: GroupedEvent[] = [];
+  for (let i = 0; i < events.length; i++) {
+    if (host.has(i)) continue;
+    const e = events[i];
+    const kids = kidsOf.get(i);
+    if (!kids?.length) {
+      out.push(e);
+      continue;
+    }
+    const g: GroupedEvent = {
+      ...e,
+      tokenDeltas: { ...e.tokenDeltas },
+      groupedTypes: [],
+      extraSol: 0,
+      extraStable: 0,
+    };
+    let fee = e.feeSol ?? 0;
+    for (const k of kids) {
+      const c = events[k];
+      g.groupedTypes!.push(c.type);
+      g.solDelta += c.solDelta;
+      for (const [sym, v] of Object.entries(c.tokenDeltas))
+        g.tokenDeltas[sym] = (g.tokenDeltas[sym] ?? 0) + v;
+      fee += c.feeSol ?? 0;
+      g.extraSol! += c.solDelta;
+      g.extraStable! += stableOf(c);
+    }
+    g.feeSol = fee;
+    out.push(g);
+  }
+  return out;
+}
+
 // Δ баланса события:
 // - переводы/свапы — их прямой денежный эффект;
 // - выход LP — результат всего эпизода позиции: (выход + изъятия + сборы) −
@@ -647,19 +718,23 @@ export function journalSummary(wallet: string): {
     return past ? balance.totalUsd - past.totalUsd : null;
   };
 
+  const groups = groupEvents(j.events);
+
   // Снимок баланса портфеля после каждого шага: кумулятивные SOL и стейблы
   // (LP-потоки внутренние — общий портфель меняют только переводы, свапы и
   // комиссии; токены без цены, как ORCA, в снимок не входят) по цене шага.
   let runSol = 0;
   let runStable = 0;
   const balanceAfter = new Map<string, number | null>();
-  for (const e of j.events) {
+  for (const e of groups) {
     const transfer = e.type === "deposit" || e.type === "withdraw" || e.type === "swap" || e.type === "other";
     if (transfer) {
       runSol += e.solDelta;
-      runStable += Object.entries(e.tokenDeltas)
-        .filter(([sym]) => sym === "USDC" || sym === "USDT")
-        .reduce((s, [, v]) => s + v, 0);
+      runStable += stableOf(e);
+    } else {
+      // влитые в LP-группу свапы/пыль меняют состав портфеля
+      runSol += e.extraSol ?? 0;
+      runStable += e.extraStable ?? 0;
     }
     runSol -= e.feeSol ?? 0;
     balanceAfter.set(
@@ -668,9 +743,9 @@ export function journalSummary(wallet: string): {
     );
   }
 
-  const deltas = computeDeltas(j.events);
+  const deltas = computeDeltas(groups);
   return {
-    events: [...j.events].reverse().map((e) => ({
+    events: [...groups].reverse().map((e) => ({
       ...e,
       balanceDeltaUsd: deltas.get(e.signature) ?? null,
       balanceAfterUsd: balanceAfter.get(e.signature) ?? null,
