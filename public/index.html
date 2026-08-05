@@ -109,12 +109,20 @@
   <div class="tabs" id="tabs">
     <button data-tab="positions" class="active">Позиции</button>
     <button data-tab="market">Рынок</button>
+    <span id="updatedAt" style="margin-left:auto;align-self:center;color:var(--muted);font-size:12px"></span>
   </div>
 
   <div id="tab-positions">
     <div class="row">
       <input id="wallet" placeholder="Паблик-адрес кошелька (Solana)" spellcheck="false">
       <button class="primary" id="load">Загрузить</button>
+      <select id="refreshSel" title="Интервал автообновления">
+        <option value="0">без обновления</option>
+        <option value="30">30 сек</option>
+        <option value="60">1 мин</option>
+        <option value="300">5 мин</option>
+        <option value="900">15 мин</option>
+      </select>
     </div>
 
     <div id="out"></div>
@@ -145,8 +153,39 @@ const fmtPct = (v, d = 2) => v == null ? "н/д" : v.toFixed(d) + "%";
 const cls = v => v == null ? "" : v >= 0 ? "pos" : "neg";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-$("#load").onclick = load;
+$("#load").onclick = () => load();
 walletInput.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+
+// ── Автообновление ──
+const refreshSel = $("#refreshSel");
+refreshSel.value = localStorage.getItem("lpmon_refresh") ?? "60";
+let refreshTimer = null;
+let refreshing = false;
+
+function applyRefresh() {
+  localStorage.setItem("lpmon_refresh", refreshSel.value);
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
+  const sec = Number(refreshSel.value);
+  if (sec > 0) refreshTimer = setInterval(refreshTick, sec * 1000);
+}
+refreshSel.onchange = applyRefresh;
+
+async function refreshTick() {
+  if (refreshing || document.hidden) return; // не накладываемся и не молотим в фоновой вкладке
+  refreshing = true;
+  try {
+    if (!$("#tab-market").hidden) await loadMarket(true);
+    else if (walletInput.value.trim()) await load(true);
+  } finally {
+    refreshing = false;
+  }
+}
+applyRefresh();
+
+function stampUpdated() {
+  $("#updatedAt").textContent = "обновлено " + new Date().toLocaleTimeString("ru-RU");
+}
 
 // ── Вкладки ──
 let marketLoaded = false;
@@ -159,23 +198,26 @@ $("#tabs").addEventListener("click", e => {
   $("#tab-market").hidden = b.dataset.tab !== "market";
   if (b.dataset.tab === "market" && !marketLoaded) loadMarket();
 });
-$("#marketRefresh").onclick = loadMarket;
+$("#marketRefresh").onclick = () => loadMarket();
 
 const fmtSignedPct = (v, d = 2) => v == null ? "н/д" :
   (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d) + "%";
 
-async function loadMarket() {
+async function loadMarket(silent = false) {
   marketLoaded = true;
   const mo = $("#marketout");
   $("#marketRefresh").disabled = true;
-  mo.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю свечи и считаю волатильность…</div>';
+  if (!silent)
+    mo.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю свечи и считаю волатильность…</div>';
   try {
     const res = await fetch("/api/market");
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     mo.innerHTML = data.coins.map(renderCoin).join("");
+    stampUpdated();
   } catch (e) {
-    mo.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
+    if (silent) console.warn("автообновление рынка:", e);
+    else mo.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
   } finally {
     $("#marketRefresh").disabled = false;
   }
@@ -214,22 +256,25 @@ function renderCoin(c) {
   </div>`;
 }
 
-async function load() {
+async function load(silent = false) {
   const wallet = walletInput.value.trim();
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
-    out.innerHTML = '<div class="err">Введите корректный адрес кошелька Solana.</div>';
+    if (!silent) out.innerHTML = '<div class="err">Введите корректный адрес кошелька Solana.</div>';
     return;
   }
   localStorage.setItem("lpmon_wallet", wallet);
   $("#load").disabled = true;
-  out.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю позиции, историю и статистику пулов… (10–60 сек на публичном RPC)</div>';
+  if (!silent)
+    out.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю позиции, историю и статистику пулов… (10–60 сек на публичном RPC)</div>';
   try {
     const res = await fetch(`/api/positions?wallet=${wallet}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     render(data);
+    stampUpdated();
   } catch (e) {
-    out.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
+    if (silent) console.warn("автообновление позиций:", e);
+    else out.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
   } finally {
     $("#load").disabled = false;
   }
@@ -401,6 +446,23 @@ function render(data) {
   for (const p of ps) { bindSim(p); initChart(p); }
 }
 
+// Средняя цена входа: из суммарного состава депозитов (A, B) и фиксированных
+// границ диапазона. B/A = b·s·(s−a)/(b−s), где s=√P, a=√Pl, b=√Pu →
+// квадратное уравнение b·s² + (r−ab)·s − r·b = 0.
+function entryPrice(p) {
+  const d = p.pnl;
+  if (!d || d.depositedA == null || d.depositedB == null) return null;
+  const A = d.depositedA, B = d.depositedB;
+  if (A <= 0 && B <= 0) return null;
+  if (A <= 0) return p.upperPrice; // весь вход в токене B — цена была выше диапазона
+  if (B <= 0) return p.lowerPrice; // весь вход в токене A — цена была ниже диапазона
+  const a = Math.sqrt(p.lowerPrice), b = Math.sqrt(p.upperPrice);
+  const r = B / A;
+  const s = (-(r - a * b) + Math.sqrt((r - a * b) ** 2 + 4 * r * b * b)) / (2 * b);
+  const P = s * s;
+  return Number.isFinite(P) && P > 0 ? P : null;
+}
+
 function renderPosition(p, market) {
   const inRange = p.status === "priceInRange";
   const statusTxt = inRange ? "в диапазоне" :
@@ -427,6 +489,13 @@ function renderPosition(p, market) {
   const rewards = p.pendingRewards.map(r =>
     `${fmtNum(r.uiAmount)} ${esc(r.symbol)} (${fmtUsd(r.usd, 4)})`).join(", ");
 
+  // Отметка цены входа на шкале
+  const entry = entryPrice(p);
+  const entryTick = entry != null && entry > vMin && entry < vMax
+    ? `<div title="цена входа ~${fmtNum(entry, 4)}"
+        style="position:absolute;top:0;bottom:0;width:0;border-left:2px dotted #c792ea;left:${pct(entry)}%"></div>`
+    : "";
+
   return `<div class="card" id="card-${p.positionAddress}">
     <h2>${esc(p.pair)} · ${p.feeRatePct}% <span class="badge ${inRange ? "in" : "out"}">${statusTxt}</span></h2>
     <div class="addr">${esc(p.positionAddress)}</div>
@@ -435,11 +504,12 @@ function renderPosition(p, market) {
     <div class="rangebar">
       <div class="band" style="left:${pct(p.lowerPrice)}%; width:${pct(p.upperPrice) - pct(p.lowerPrice)}%"></div>
       ${levelTicks}
+      ${entryTick}
       <div class="cur" style="left:${pct(p.currentPrice)}%"></div>
     </div>
     <div class="rangelbl">
       <span>${fmtNum(p.lowerPrice, 4)}</span>
-      <span>цена: <b style="color:var(--text)">${fmtNum(p.currentPrice, 4)}</b></span>
+      <span>цена: <b style="color:var(--text)">${fmtNum(p.currentPrice, 4)}</b>${entry != null ? ` · вход: <b style="color:#c792ea">${fmtNum(entry, 4)}</b>` : ""}</span>
       <span>${fmtNum(p.upperPrice, 4)}</span>
     </div>
 
