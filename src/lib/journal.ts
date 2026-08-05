@@ -562,10 +562,38 @@ async function parseTx(
   };
 }
 
+// Изменение общего баланса (кошелёк + позиции) от события, $.
+// LP-операции перекладывают средства между кошельком и позицией — общий
+// баланс меняется только на сетевую комиссию. Свап — на проскальзывание+fee.
+function balanceDeltaUsd(e: JournalEvent): number | null {
+  const feeUsd = e.feeSol != null && e.priceUsd != null ? e.feeSol * e.priceUsd : 0;
+  const solUsd = e.priceUsd != null ? e.solDelta * e.priceUsd : null;
+  const stable = Object.entries(e.tokenDeltas)
+    .filter(([sym]) => sym === "USDC" || sym === "USDT")
+    .reduce((s, [, v]) => s + v, 0);
+  switch (e.type) {
+    case "deposit":
+      return e.valueUsd;
+    case "withdraw":
+      return e.valueUsd != null ? -e.valueUsd - feeUsd : null;
+    case "swap":
+    case "other": {
+      // Поток неоцениваемого токена (не SOL/стейбл) — дельту не посчитать.
+      const hasUnknown = Object.entries(e.tokenDeltas).some(
+        ([sym, v]) => sym !== "USDC" && sym !== "USDT" && Math.abs(v) > 1e-9,
+      );
+      if (hasUnknown) return null;
+      return solUsd != null ? solUsd + stable - feeUsd : null;
+    }
+    default:
+      return -feeUsd;
+  }
+}
+
 // ── Сводка для API ──────────────────────────────────────────────────────────
 
 export function journalSummary(wallet: string): {
-  events: JournalEvent[];
+  events: Array<JournalEvent & { balanceDeltaUsd: number | null }>;
   netDepositedUsd: number | null;
   balance: BalanceSnapshot | null;
   pnlSinceStartUsd: number | null;
@@ -590,7 +618,7 @@ export function journalSummary(wallet: string): {
   };
 
   return {
-    events: [...j.events].reverse(),
+    events: [...j.events].reverse().map((e) => ({ ...e, balanceDeltaUsd: balanceDeltaUsd(e) })),
     netDepositedUsd: netDeposited,
     balance,
     pnlSinceStartUsd:

@@ -273,6 +273,9 @@ function renderJournal(d) {
     for (const [sym, v] of Object.entries(e.tokenDeltas ?? {}))
       parts.push(`<span class="${cls(v)}">${v > 0 ? "+" : ""}${fmtNum(v, 2)} ${esc(sym)}</span>`);
     const range = e.range ? `${fmtNum(e.range.lower, 2)} — ${fmtNum(e.range.upper, 2)}` : "—";
+    const bd = e.balanceDeltaUsd;
+    const bdTxt = bd == null ? "н/д" : Math.abs(bd) < 0.005 ? "0.00" : fmtSigned(bd);
+    const bdCls = bd == null || Math.abs(bd) < 0.005 ? "" : cls(bd);
     const cmt = e.comment
       ? esc(e.comment)
       : '<span class="empty">＋ комментарий…</span>';
@@ -280,6 +283,7 @@ function renderJournal(d) {
       <td class="num">${dt}</td>
       <td><span class="jbadge ${e.type}">${JTYPE_RU[e.type] ?? e.type}</span></td>
       <td>${parts.join("<br>") || "—"}${e.valueUsd != null ? `<br><span style="color:var(--muted)">≈ ${fmtUsd(e.valueUsd)}</span>` : ""}</td>
+      <td class="num ${bdCls}">${bdTxt}</td>
       <td class="num">${range}</td>
       <td class="num">${e.priceUsd != null ? "$" + fmtNum(e.priceUsd, 2) : "—"}</td>
       <td class="num">${e.feeSol != null ? fmtNum(e.feeSol, 6) : "—"}</td>
@@ -288,7 +292,7 @@ function renderJournal(d) {
   }).join("");
 
   html += `<div class="card" style="overflow-x:auto"><table class="jrnl">
-    <tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Диапазон</th><th>Цена SOL</th><th>Fee, SOL</th><th>Комментарий</th></tr>
+    <tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Δ баланса, $</th><th>Диапазон</th><th>Цена SOL</th><th>Fee, SOL</th><th>Комментарий</th></tr>
     ${rows}
   </table></div>`;
   return html;
