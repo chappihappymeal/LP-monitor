@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "backtest": "tsx src/backtest.ts",
     "backtest:history": "tsx src/backtest-history.ts",
-    "bot": "tsx src/bot.ts"
+    "bot": "tsx src/bot.ts",
+    "backtest:hedge": "tsx src/backtest-hedge.ts"
   },
   "repository": {
     "type": "git",
