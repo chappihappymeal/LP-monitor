@@ -562,38 +562,68 @@ async function parseTx(
   };
 }
 
-// Изменение общего баланса (кошелёк + позиции) от события, $.
-// LP-операции перекладывают средства между кошельком и позицией — общий
-// баланс меняется только на сетевую комиссию. Свап — на проскальзывание+fee.
-function balanceDeltaUsd(e: JournalEvent): number | null {
-  const feeUsd = e.feeSol != null && e.priceUsd != null ? e.feeSol * e.priceUsd : 0;
-  const solUsd = e.priceUsd != null ? e.solDelta * e.priceUsd : null;
-  const stable = Object.entries(e.tokenDeltas)
+const stableOf = (e: JournalEvent): number =>
+  Object.entries(e.tokenDeltas)
     .filter(([sym]) => sym === "USDC" || sym === "USDT")
     .reduce((s, [, v]) => s + v, 0);
-  switch (e.type) {
-    case "deposit":
-      return e.valueUsd;
-    case "withdraw":
-      return e.valueUsd != null ? -e.valueUsd - feeUsd : null;
-    case "swap":
-    case "other": {
-      // Поток неоцениваемого токена (не SOL/стейбл) — дельту не посчитать.
-      const hasUnknown = Object.entries(e.tokenDeltas).some(
-        ([sym, v]) => sym !== "USDC" && sym !== "USDT" && Math.abs(v) > 1e-9,
-      );
-      if (hasUnknown) return null;
-      return solUsd != null ? solUsd + stable - feeUsd : null;
+
+// Денежный поток события в USD с точки зрения портфеля (с учётом fee).
+function flowUsd(e: JournalEvent): number | null {
+  if (e.priceUsd == null) return null;
+  return (e.solDelta - (e.feeSol ?? 0)) * e.priceUsd + stableOf(e);
+}
+
+// Δ баланса события:
+// - переводы/свапы — их прямой денежный эффект;
+// - выход LP — результат всего эпизода позиции: (выход + изъятия + сборы) −
+//   (вход + довнесения), в исторических ценах, минус сетевые fee. Показывает,
+//   насколько эффективным оказался этот кусок стратегии;
+// - остальные LP-события — null (результат появится на выходе).
+function computeDeltas(events: JournalEvent[]): Map<string, number | null> {
+  const out = new Map<string, number | null>();
+  // Эпизоды по позициям: аккумулируем потоки от open до close.
+  const episode = new Map<string, { sum: number | null; hasOpen: boolean }>();
+  for (const e of events) {
+    const feeUsd = e.feeSol != null && e.priceUsd != null ? e.feeSol * e.priceUsd : 0;
+    switch (e.type) {
+      case "deposit":
+        out.set(e.signature, e.valueUsd);
+        break;
+      case "withdraw":
+        out.set(e.signature, e.valueUsd != null ? -e.valueUsd - feeUsd : null);
+        break;
+      case "swap":
+      case "other": {
+        const hasUnknown = Object.entries(e.tokenDeltas).some(
+          ([sym, v]) => sym !== "USDC" && sym !== "USDT" && Math.abs(v) > 1e-9,
+        );
+        out.set(e.signature, hasUnknown ? null : flowUsd(e));
+        break;
+      }
+      default: {
+        // LP-событие: копим эпизод позиции.
+        const key = e.position ?? "?";
+        const ep = episode.get(key) ?? { sum: 0, hasOpen: false };
+        const f = flowUsd(e);
+        ep.sum = ep.sum == null || f == null ? null : ep.sum + f;
+        if (e.type === "open") ep.hasOpen = true;
+        episode.set(key, ep);
+        if (e.type === "close") {
+          out.set(e.signature, ep.hasOpen ? ep.sum : null);
+          episode.delete(key);
+        } else {
+          out.set(e.signature, null);
+        }
+      }
     }
-    default:
-      return -feeUsd;
   }
+  return out;
 }
 
 // ── Сводка для API ──────────────────────────────────────────────────────────
 
 export function journalSummary(wallet: string): {
-  events: Array<JournalEvent & { balanceDeltaUsd: number | null }>;
+  events: Array<JournalEvent & { balanceDeltaUsd: number | null; balanceAfterUsd: number | null }>;
   netDepositedUsd: number | null;
   balance: BalanceSnapshot | null;
   pnlSinceStartUsd: number | null;
@@ -617,8 +647,34 @@ export function journalSummary(wallet: string): {
     return past ? balance.totalUsd - past.totalUsd : null;
   };
 
+  // Снимок баланса портфеля после каждого шага: кумулятивные SOL и стейблы
+  // (LP-потоки внутренние — общий портфель меняют только переводы, свапы и
+  // комиссии; токены без цены, как ORCA, в снимок не входят) по цене шага.
+  let runSol = 0;
+  let runStable = 0;
+  const balanceAfter = new Map<string, number | null>();
+  for (const e of j.events) {
+    const transfer = e.type === "deposit" || e.type === "withdraw" || e.type === "swap" || e.type === "other";
+    if (transfer) {
+      runSol += e.solDelta;
+      runStable += Object.entries(e.tokenDeltas)
+        .filter(([sym]) => sym === "USDC" || sym === "USDT")
+        .reduce((s, [, v]) => s + v, 0);
+    }
+    runSol -= e.feeSol ?? 0;
+    balanceAfter.set(
+      e.signature,
+      e.priceUsd != null ? runSol * e.priceUsd + runStable : null,
+    );
+  }
+
+  const deltas = computeDeltas(j.events);
   return {
-    events: [...j.events].reverse().map((e) => ({ ...e, balanceDeltaUsd: balanceDeltaUsd(e) })),
+    events: [...j.events].reverse().map((e) => ({
+      ...e,
+      balanceDeltaUsd: deltas.get(e.signature) ?? null,
+      balanceAfterUsd: balanceAfter.get(e.signature) ?? null,
+    })),
     netDepositedUsd: netDeposited,
     balance,
     pnlSinceStartUsd:
