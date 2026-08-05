@@ -6,7 +6,9 @@
     "start": "tsx src/server.ts",
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "backtest": "tsx src/backtest.ts"
+    "backtest": "tsx src/backtest.ts",
+    "backtest:history": "tsx src/backtest-history.ts",
+    "bot": "tsx src/bot.ts"
   },
   "repository": {
     "type": "git",
