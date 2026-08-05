@@ -12,9 +12,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -32,6 +35,12 @@ type config struct {
 	wallet    string
 	appURL    string
 	chromeWS  string
+	// Алерты о резких движениях цены:
+	product  string        // продукт Coinbase (ALERT_PRODUCT, SOL-USD)
+	fastPct  float64       // порог за 5 минут, % (ALERT_FAST_PCT, 1.5)
+	hourPct  float64       // порог за час, % (ALERT_HOUR_PCT, 4)
+	poll     time.Duration // период опроса (ALERT_POLL_SEC, 60с)
+	cooldown time.Duration // пауза между алертами одного типа (ALERT_COOLDOWN_MIN, 30м)
 }
 
 func loadConfig() (config, error) {
@@ -55,7 +64,21 @@ func loadConfig() (config, error) {
 		}
 		c.allowedID = id
 	}
+	c.product = envOr("ALERT_PRODUCT", "SOL-USD")
+	c.fastPct = envFloat("ALERT_FAST_PCT", 1.5)
+	c.hourPct = envFloat("ALERT_HOUR_PCT", 4)
+	c.poll = time.Duration(envFloat("ALERT_POLL_SEC", 60)) * time.Second
+	c.cooldown = time.Duration(envFloat("ALERT_COOLDOWN_MIN", 30)) * time.Minute
 	return c, nil
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
 }
 
 func envOr(key, def string) string {
@@ -86,6 +109,8 @@ func main() {
 		log.Print("selftest: завершён")
 		return
 	}
+
+	go priceWatcher(bot, cfg)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -175,4 +200,86 @@ func send(bot *tgbotapi.BotAPI, c tgbotapi.Chattable) {
 	if _, err := bot.Send(c); err != nil {
 		log.Printf("send: %v", err)
 	}
+}
+
+// ── Алерты о резких движениях цены ──────────────────────────────────────────
+
+type pricePoint struct {
+	t time.Time
+	p float64
+}
+
+// Опрос спот-цены раз в poll; алерт при |Δ| ≥ fastPct за 5 минут или
+// |Δ| ≥ hourPct за час, с кулдауном на каждый тип. Если истории меньше
+// окна — сравниваем с самой старой точкой (движение за меньший срок ещё
+// аномальнее).
+func priceWatcher(bot *tgbotapi.BotAPI, cfg config) {
+	log.Printf("монитор цены %s: >%.1f%%/5мин или >%.1f%%/час, опрос %s",
+		cfg.product, cfg.fastPct, cfg.hourPct, cfg.poll)
+	var hist []pricePoint
+	lastAlert := map[string]time.Time{}
+
+	for ; ; time.Sleep(cfg.poll) {
+		p, err := fetchSpot(cfg.product)
+		if err != nil {
+			log.Printf("монитор цены: %v", err)
+			continue
+		}
+		now := time.Now()
+		hist = append(hist, pricePoint{now, p})
+		for len(hist) > 0 && now.Sub(hist[0].t) > 65*time.Minute {
+			hist = hist[1:]
+		}
+		if len(hist) < 2 {
+			continue
+		}
+		check := func(window time.Duration, thr float64, key, label string) {
+			ref := hist[0]
+			for _, h := range hist {
+				if now.Sub(h.t) <= window {
+					ref = h
+					break
+				}
+			}
+			if now.Sub(ref.t) < cfg.poll {
+				return // сравнивать не с чем
+			}
+			ch := (p/ref.p - 1) * 100
+			if math.Abs(ch) < thr || now.Sub(lastAlert[key]) < cfg.cooldown {
+				return
+			}
+			lastAlert[key] = now
+			emoji, dir := "🚀", "вверх"
+			if ch < 0 {
+				emoji, dir = "🚨", "вниз"
+			}
+			send(bot, tgbotapi.NewMessage(cfg.allowedID, fmt.Sprintf(
+				"%s SOL резко идёт %s: %+.1f%% за %s ($%.2f → $%.2f).\nЖми «%s» — посмотрим позиции.",
+				emoji, dir, ch, label, ref.p, p, btnStats)))
+		}
+		check(5*time.Minute, cfg.fastPct, "fast", "5 мин")
+		check(60*time.Minute, cfg.hourPct, "hour", "час")
+	}
+}
+
+func fetchSpot(product string) (float64, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest("GET",
+		"https://api.exchange.coinbase.com/products/"+product+"/ticker", nil)
+	req.Header.Set("User-Agent", "lp-monitor-bot")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("coinbase %d", resp.StatusCode)
+	}
+	var v struct {
+		Price string `json:"price"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(v.Price, 64)
 }
