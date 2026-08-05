@@ -264,7 +264,7 @@ function renderJournal(d) {
     return html;
   }
 
-  const rows = d.events.map(e => {
+  const rows = d.events.map((e, i) => {
     const dt = e.blockTime ? new Date(e.blockTime * 1000).toLocaleString("ru-RU",
       { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
     const parts = [];
@@ -273,13 +273,17 @@ function renderJournal(d) {
     for (const [sym, v] of Object.entries(e.tokenDeltas ?? {}))
       parts.push(`<span class="${cls(v)}">${v > 0 ? "+" : ""}${fmtNum(v, 2)} ${esc(sym)}</span>`);
     const range = e.range ? `${fmtNum(e.range.lower, 2)} — ${fmtNum(e.range.upper, 2)}` : "—";
-    // Для LP-событий дельта появляется на выходе (итог эпизода); до него — «—».
-    const bd = e.balanceDeltaUsd;
-    const lpPending = ["open", "increase", "decrease", "collect"].includes(e.type);
-    const bdTxt = bd == null ? (lpPending ? "—" : "н/д")
-      : Math.abs(bd) < 0.005 ? "0.00" : fmtSigned(bd);
-    const bdCls = bd == null || Math.abs(bd) < 0.005 ? "" : cls(bd);
+    // Δ шага — разница соседних снимков баланса; события идут новые → старые,
+    // у самого первого события предыдущий баланс — ноль.
     const ba = e.balanceAfterUsd;
+    const prevBa = i + 1 < d.events.length ? d.events[i + 1].balanceAfterUsd : 0;
+    const step = ba != null && prevBa != null ? ba - prevBa : null;
+    const bdTxt = step == null ? "н/д" : Math.abs(step) < 0.005 ? "0.00" : fmtSigned(step);
+    const bdCls = step == null || Math.abs(step) < 0.005 ? "" : cls(step);
+    // Итог LP-эпизода (вход→выход) — подписью на строке выхода.
+    const episode = e.type === "close" && e.balanceDeltaUsd != null
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">эпизод: <b class="${cls(e.balanceDeltaUsd)}">${fmtSigned(e.balanceDeltaUsd)}</b></div>`
+      : "";
     const cmt = e.comment
       ? esc(e.comment)
       : '<span class="empty">＋ комментарий…</span>';
@@ -291,7 +295,7 @@ function renderJournal(d) {
           : ""
       }</td>
       <td>${parts.join("<br>") || "—"}${e.valueUsd != null ? `<br><span style="color:var(--muted)">≈ ${fmtUsd(e.valueUsd)}</span>` : ""}</td>
-      <td class="num ${bdCls}">${bdTxt}</td>
+      <td class="num ${bdCls}">${bdTxt}${episode}</td>
       <td class="num">${ba == null ? "н/д" : fmtUsd(ba, 2)}</td>
       <td class="num">${range}</td>
       <td class="num">${e.priceUsd != null ? "$" + fmtNum(e.priceUsd, 2) : "—"}</td>
