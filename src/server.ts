@@ -1,0 +1,96 @@
+import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { PORT } from "./config.js";
+import {
+  fetchWalletPositions,
+  hydratePosition,
+  makeRpc,
+  type HydratedContext,
+  type PositionView,
+} from "./lib/positions.js";
+import { computePnl } from "./lib/history.js";
+import { simulateRebalance } from "./lib/simulate.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+const rpc = makeRpc();
+
+// Контексты последней загрузки — чтобы симуляция не перечитывала всё заново.
+const ctxCache = new Map<string, { at: number; ctx: HydratedContext; view: PositionView }>();
+
+function isValidAddress(s: unknown): s is string {
+  return typeof s === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
+}
+
+app.get("/api/positions", async (req, res) => {
+  const wallet = req.query.wallet;
+  const withPnl = req.query.pnl !== "0";
+  if (!isValidAddress(wallet)) {
+    res.status(400).json({ error: "Некорректный адрес кошелька" });
+    return;
+  }
+  try {
+    const positions = await fetchWalletPositions(rpc, wallet);
+    const out = [];
+    for (const pos of positions) {
+      try {
+        const { view, ctx } = await hydratePosition(rpc, pos);
+        ctxCache.set(view.positionAddress, { at: Date.now(), ctx, view });
+        let pnl = null;
+        if (withPnl) {
+          try {
+            pnl = await computePnl(ctx, view);
+          } catch (e) {
+            console.warn(`pnl failed for ${view.positionAddress}:`, e);
+          }
+        }
+        out.push({ ...view, pnl });
+      } catch (e) {
+        console.warn(`hydrate failed for ${pos.address}:`, e);
+        out.push({ positionAddress: pos.address, error: String(e) });
+      }
+    }
+    res.json({ wallet, positions: out, fetchedAt: Date.now() });
+  } catch (e: any) {
+    console.error("positions error:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/simulate", async (req, res) => {
+  const { positionAddress, newLowerPrice, newUpperPrice, swapSlippageBps } = req.body ?? {};
+  const cached = ctxCache.get(positionAddress);
+  if (!cached) {
+    res.status(404).json({
+      error: "Позиция не загружена — сначала запросите /api/positions по кошельку",
+    });
+    return;
+  }
+  try {
+    // Обновляем данные пула/позиции, если кэш старше 30 секунд.
+    let { ctx, view } = cached;
+    if (Date.now() - cached.at > 30_000) {
+      const fresh = await hydratePosition(rpc, ctx.position);
+      ctx = fresh.ctx;
+      view = fresh.view;
+      ctxCache.set(view.positionAddress, { at: Date.now(), ctx, view });
+    }
+    const result = await simulateRebalance(ctx, view, {
+      newLowerPrice: Number(newLowerPrice),
+      newUpperPrice: Number(newUpperPrice),
+      swapSlippageBps: swapSlippageBps != null ? Number(swapSlippageBps) : undefined,
+    });
+    res.json(result);
+  } catch (e: any) {
+    console.error("simulate error:", e);
+    res.status(400).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`LP-monitor запущен: http://localhost:${PORT}`);
+});

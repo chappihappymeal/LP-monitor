@@ -1,0 +1,35 @@
+{
+  "name": "lp-monitor",
+  "version": "1.0.0",
+  "description": "Orca Whirlpools LP position monitor: pending yield, PnL, rebalance simulator",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chappihappymeal/LP-monitor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/chappihappymeal/LP-monitor/issues"
+  },
+  "homepage": "https://github.com/chappihappymeal/LP-monitor#readme",
+  "dependencies": {
+    "@orca-so/whirlpools": "^8.0.1",
+    "@orca-so/whirlpools-client": "^7.0.0",
+    "@orca-so/whirlpools-core": "^3.1.1",
+    "@solana/kit": "^5.5.1",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.6",
+    "typescript": "^5.9.3"
+  },
+  "type": "module"
+}

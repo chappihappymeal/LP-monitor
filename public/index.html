@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP Monitor — Orca Whirlpools</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d3644;
+    --text: #e6edf3; --muted: #8b96a5; --accent: #58a6ff;
+    --green: #3fb970; --red: #f85149; --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input, button, select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-size: 15px;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  #wallet { flex: 1; min-width: 280px; font-family: ui-monospace, monospace; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; cursor: pointer; font-weight: 600; }
+  button.primary:hover { background: #2a7aff; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px; margin: 20px 0; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .stat .lbl { color: var(--muted); font-size: 12px; }
+  .stat .val { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; margin-bottom: 18px; }
+  .card h2 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge { font-size: 12px; padding: 2px 10px; border-radius: 20px; font-weight: 600; }
+  .badge.in { background: #12341f; color: var(--green); }
+  .badge.out { background: #3d2300; color: var(--yellow); }
+  .addr { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; word-break: break-all; margin: 4px 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; }
+  .kv { background: var(--panel2); border-radius: 8px; padding: 10px 12px; }
+  .kv .lbl { color: var(--muted); font-size: 12px; }
+  .kv .val { font-weight: 600; margin-top: 2px; }
+  .kv .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .rangebar { position: relative; height: 34px; background: var(--panel2); border-radius: 8px; margin: 14px 0 4px; overflow: hidden; }
+  .rangebar .band { position: absolute; top: 0; bottom: 0; background: #1f4f76; opacity: .85; }
+  .rangebar .cur { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; }
+  .rangelbl { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  details.sim { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+  details.sim summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+  .simform { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; align-items: end; }
+  .simform label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 3px; }
+  .simform input { width: 130px; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .quick button { font-size: 12px; padding: 5px 10px; cursor: pointer; border-radius: 20px; }
+  .quick button:hover { border-color: var(--accent); }
+  table.simres { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  table.simres td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.simres td:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+  table.simres tr.total td { border-top: 2px solid var(--border); font-weight: 700; }
+  .notes { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .notes li { margin-bottom: 4px; }
+  .err { background: #3d1418; border: 1px solid var(--red); color: #ffb3ad;
+    border-radius: 8px; padding: 12px; margin: 14px 0; white-space: pre-wrap; }
+  .loading { color: var(--muted); margin: 20px 0; }
+  .spin { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🌊 LP Monitor — Orca Whirlpools</h1>
+  <div class="sub">Мониторинг концентрированных позиций: состав, pending yield, PnL и симуляция ребаланса</div>
+
+  <div class="row">
+    <input id="wallet" placeholder="Паблик-адрес кошелька (Solana)" spellcheck="false">
+    <button class="primary" id="load">Загрузить</button>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const out = $("#out");
+const walletInput = $("#wallet");
+walletInput.value = localStorage.getItem("lpmon_wallet") || "";
+
+const fmtUsd = (v, d = 2) => v == null ? "н/д" :
+  (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtSigned = (v, d = 2) => v == null ? "н/д" :
+  (v >= 0 ? "+" : "−") + "$" + Math.abs(v).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtNum = (v, d = 6) => v == null ? "н/д" :
+  Number(v.toFixed(d)).toLocaleString("ru-RU", { maximumFractionDigits: d });
+const fmtPct = (v, d = 2) => v == null ? "н/д" : v.toFixed(d) + "%";
+const cls = v => v == null ? "" : v >= 0 ? "pos" : "neg";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("#load").onclick = load;
+walletInput.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+
+async function load() {
+  const wallet = walletInput.value.trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
+    out.innerHTML = '<div class="err">Введите корректный адрес кошелька Solana.</div>';
+    return;
+  }
+  localStorage.setItem("lpmon_wallet", wallet);
+  $("#load").disabled = true;
+  out.innerHTML = '<div class="loading"><span class="spin">⟳</span> Загружаю позиции, историю и статистику пулов… (10–60 сек на публичном RPC)</div>';
+  try {
+    const res = await fetch(`/api/positions?wallet=${wallet}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    render(data);
+  } catch (e) {
+    out.innerHTML = `<div class="err">Ошибка: ${esc(e.message || e)}</div>`;
+  } finally {
+    $("#load").disabled = false;
+  }
+}
+
+function render(data) {
+  const ps = data.positions.filter(p => !p.error);
+  const errs = data.positions.filter(p => p.error);
+  if (ps.length === 0 && errs.length === 0) {
+    out.innerHTML = '<div class="card">На этом кошельке позиций Orca Whirlpools не найдено.</div>';
+    return;
+  }
+  // Суммируем по позициям, у которых значение посчитано; если ни одной — н/д.
+  const sum = (f) => {
+    const vals = ps.map(f).filter(v => v != null);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+  };
+  const totalValue = sum(p => p.valueUsd);
+  const totalYield = sum(p => p.pendingYieldUsd);
+  const totalPnl = sum(p => p.pnl?.totalPnlUsd);
+  const totalHodl = sum(p => p.pnl?.vsHodlUsd);
+
+  let html = `<div class="summary">
+    <div class="stat"><div class="lbl">Стоимость позиций</div><div class="val">${fmtUsd(totalValue)}</div></div>
+    <div class="stat"><div class="lbl">Pending yield</div><div class="val ${cls(totalYield)}">${fmtUsd(totalYield, 4)}</div></div>
+    <div class="stat"><div class="lbl">PnL всего</div><div class="val ${cls(totalPnl)}">${fmtSigned(totalPnl)}</div></div>
+    <div class="stat"><div class="lbl">PnL против HODL</div><div class="val ${cls(totalHodl)}">${fmtSigned(totalHodl)}</div></div>
+  </div>`;
+
+  html += ps.map(renderPosition).join("");
+  html += errs.map(p => `<div class="err">Позиция ${esc(p.positionAddress)}: ${esc(p.error)}</div>`).join("");
+  out.innerHTML = html;
+
+  for (const p of ps) bindSim(p);
+}
+
+function renderPosition(p) {
+  const inRange = p.status === "priceInRange";
+  const statusTxt = inRange ? "в диапазоне" :
+    p.status === "priceBelowRange" ? "цена ниже диапазона" : "цена выше диапазона";
+
+  // Видимая шкала: диапазон + запас 25% ширины с каждой стороны, цена зажимается в края.
+  const w = p.upperPrice - p.lowerPrice;
+  const vMin = p.lowerPrice - w * .25, vMax = p.upperPrice + w * .25;
+  const pct = v => Math.min(99.5, Math.max(.5, (v - vMin) / (vMax - vMin) * 100));
+
+  const pnl = p.pnl;
+  const rewards = p.pendingRewards.map(r =>
+    `${fmtNum(r.uiAmount)} ${esc(r.symbol)} (${fmtUsd(r.usd, 4)})`).join(", ");
+
+  return `<div class="card" id="card-${p.positionAddress}">
+    <h2>${esc(p.pair)} · ${p.feeRatePct}% <span class="badge ${inRange ? "in" : "out"}">${statusTxt}</span></h2>
+    <div class="addr">${esc(p.positionAddress)}</div>
+
+    <div class="rangebar">
+      <div class="band" style="left:${pct(p.lowerPrice)}%; width:${pct(p.upperPrice) - pct(p.lowerPrice)}%"></div>
+      <div class="cur" style="left:${pct(p.currentPrice)}%"></div>
+    </div>
+    <div class="rangelbl">
+      <span>${fmtNum(p.lowerPrice, 4)}</span>
+      <span>цена: <b style="color:var(--text)">${fmtNum(p.currentPrice, 4)}</b></span>
+      <span>${fmtNum(p.upperPrice, 4)}</span>
+    </div>
+
+    <div class="grid">
+      <div class="kv"><div class="lbl">Стоимость позиции</div>
+        <div class="val">${fmtUsd(p.valueUsd)}</div>
+        <div class="hint">${fmtNum(p.tokenA.uiAmount, 4)} ${esc(p.tokenA.symbol)} + ${fmtNum(p.tokenB.uiAmount, 2)} ${esc(p.tokenB.symbol)}</div></div>
+      <div class="kv"><div class="lbl">Pending yield (не собрано)</div>
+        <div class="val ${cls(p.pendingYieldUsd)}">${fmtUsd(p.pendingYieldUsd, 4)}</div>
+        <div class="hint">${fmtNum(p.pendingFees.tokenA.uiAmount, 6)} ${esc(p.tokenA.symbol)} + ${fmtNum(p.pendingFees.tokenB.uiAmount, 4)} ${esc(p.tokenB.symbol)}${rewards ? " · реварды: " + rewards : ""}</div></div>
+      <div class="kv"><div class="lbl">Оценка APR позиции (24ч)</div>
+        <div class="val">${fmtPct(p.pool?.positionFeeAprPct, 1)}</div>
+        <div class="hint">доля в активной ликвидности: ${p.shareOfPoolPct == null ? "—" : fmtPct(p.shareOfPoolPct, 3)}</div></div>
+      <div class="kv"><div class="lbl">Пул</div>
+        <div class="val">${fmtUsd(p.pool?.tvlUsd, 0)} TVL</div>
+        <div class="hint">объём 24ч ${fmtUsd(p.pool?.volume24hUsd, 0)} · комиссии 24ч ${fmtUsd(p.pool?.fees24hUsd, 0)}</div></div>
+    </div>
+
+    ${pnl ? `<div class="grid">
+      <div class="kv"><div class="lbl">Вложено (историч.)</div>
+        <div class="val">${fmtUsd(pnl.depositedValueUsd)}</div>
+        <div class="hint">${pnl.ageDays != null ? "возраст: " + pnl.ageDays.toFixed(1) + " дн." : ""}</div></div>
+      <div class="kv"><div class="lbl">Доход собран + выведено</div>
+        <div class="val">${fmtUsd(pnl.collectedYieldUsd + pnl.withdrawnValueUsd)}</div>
+        <div class="hint">сетевые комиссии: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
+      <div class="kv"><div class="lbl">PnL всего</div>
+        <div class="val ${cls(pnl.totalPnlUsd)}">${fmtSigned(pnl.totalPnlUsd)}</div>
+        <div class="hint">реализованная доходность: ${pnl.realizedAprPct == null ? "н/д" : pnl.realizedAprPct.toFixed(1) + "% годовых"}</div></div>
+      <div class="kv"><div class="lbl">PnL против HODL</div>
+        <div class="val ${cls(pnl.vsHodlUsd)}">${fmtSigned(pnl.vsHodlUsd)}</div>
+        <div class="hint">включая импермалосс</div></div>
+    </div>
+    ${pnl.note ? `<div class="notes">ⓘ ${esc(pnl.note)}</div>` : ""}` : ""}
+
+    <details class="sim">
+      <summary>⚖️ Симуляция ребаланса</summary>
+      <div class="quick" data-role="quick">
+        <button data-mode="shift" data-v="-10">⬇ сдвиг −10%</button>
+        <button data-mode="shift" data-v="-5">⬇ сдвиг −5%</button>
+        <button data-mode="shift" data-v="5">⬆ сдвиг +5%</button>
+        <button data-mode="shift" data-v="10">⬆ сдвиг +10%</button>
+        <button data-mode="around" data-v="5">±5% от цены</button>
+        <button data-mode="around" data-v="10">±10% от цены</button>
+        <button data-mode="around" data-v="20">±20% от цены</button>
+      </div>
+      <div class="simform">
+        <div><label>Новая нижняя цена</label><input data-role="lo" type="number" step="any" value="${p.lowerPrice.toPrecision(6)}"></div>
+        <div><label>Новая верхняя цена</label><input data-role="hi" type="number" step="any" value="${p.upperPrice.toPrecision(6)}"></div>
+        <button class="primary" data-role="run">Симулировать</button>
+      </div>
+      <div data-role="simout"></div>
+    </details>
+  </div>`;
+}
+
+function bindSim(p) {
+  const card = document.getElementById("card-" + p.positionAddress);
+  if (!card) return;
+  const lo = card.querySelector('[data-role="lo"]');
+  const hi = card.querySelector('[data-role="hi"]');
+  const simout = card.querySelector('[data-role="simout"]');
+
+  card.querySelector('[data-role="quick"]').addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const v = Number(b.dataset.v) / 100;
+    if (b.dataset.mode === "shift") {
+      lo.value = (p.lowerPrice * (1 + v)).toPrecision(6);
+      hi.value = (p.upperPrice * (1 + v)).toPrecision(6);
+    } else {
+      lo.value = (p.currentPrice * (1 - v)).toPrecision(6);
+      hi.value = (p.currentPrice * (1 + v)).toPrecision(6);
+    }
+  });
+
+  const runBtn = card.querySelector('[data-role="run"]');
+  runBtn.onclick = async () => {
+    runBtn.disabled = true;
+    simout.innerHTML = '<div class="loading"><span class="spin">⟳</span> Считаю…</div>';
+    try {
+      const res = await fetch("/api/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          positionAddress: p.positionAddress,
+          newLowerPrice: Number(lo.value),
+          newUpperPrice: Number(hi.value),
+        }),
+      });
+      const sim = await res.json();
+      if (!res.ok) throw new Error(sim.error || res.statusText);
+      simout.innerHTML = renderSim(p, sim);
+    } catch (e) {
+      simout.innerHTML = `<div class="err">${esc(e.message || e)}</div>`;
+    } finally {
+      runBtn.disabled = false;
+    }
+  };
+}
+
+function renderSim(p, s) {
+  const dir = s.swap.direction === "none" ? "свап не нужен" :
+    `${fmtNum(s.swap.amountIn, 4)} ${esc(s.swap.amountInSymbol)} → ${esc(s.swap.direction === "AtoB" ? p.tokenB.symbol : p.tokenA.symbol)} (${fmtUsd(s.swap.valueUsd)})`;
+  return `
+  <table class="simres">
+    <tr><td>Новый диапазон (по тикам)</td><td>${fmtNum(s.input.lowerPrice, 4)} — ${fmtNum(s.input.upperPrice, 4)}</td></tr>
+    <tr><td>Забираем из позиции (+ pending yield ${fmtUsd(s.withdraw.pendingYieldUsd, 4)})</td>
+        <td>${fmtNum(s.withdraw.amountA, 4)} ${esc(p.tokenA.symbol)} + ${fmtNum(s.withdraw.amountB, 2)} ${esc(p.tokenB.symbol)}</td></tr>
+    <tr><td>Требуемый свап</td><td>${dir}</td></tr>
+    <tr><td>— комиссия пула за свап (${p.feeRatePct}%)</td><td class="neg">${fmtUsd(s.costs.swapFeeUsd, 4)}</td></tr>
+    <tr><td>— сдвиг цены (импакт ${fmtPct(s.swap.priceImpactPct, 3)})</td><td class="neg">${fmtUsd(s.costs.priceImpactUsd, 4)}</td></tr>
+    <tr><td>— сетевые комиссии (~${s.costs.networkFeeSol} SOL)</td><td class="neg">${fmtUsd(s.costs.networkFeeUsd, 4)}</td></tr>
+    <tr class="total"><td>Итого издержки ребаланса (мгновенный убыток)</td>
+        <td class="neg">${fmtUsd(s.costs.totalUsd, 4)}</td></tr>
+    <tr><td>Новая позиция</td>
+        <td>${fmtNum(s.next.amountA, 4)} ${esc(p.tokenA.symbol)} + ${fmtNum(s.next.amountB, 2)} ${esc(p.tokenB.symbol)} = ${fmtUsd(s.next.valueUsd)}</td></tr>
+    <tr><td>Концентрация ликвидности</td>
+        <td>${s.next.concentrationVsCurrent == null ? "н/д" : "×" + s.next.concentrationVsCurrent.toFixed(2) + " к текущей"}</td></tr>
+    <tr><td>Оценка дохода в день</td>
+        <td>${fmtUsd(s.current.dailyFeesUsd, 4)} → <b class="${cls((s.next.dailyFeesUsd ?? 0) - (s.current.dailyFeesUsd ?? 0))}">${fmtUsd(s.next.dailyFeesUsd, 4)}</b></td></tr>
+    <tr><td>Оценка APR</td>
+        <td>${fmtPct(s.current.aprPct, 1)} → ${fmtPct(s.next.aprPct, 1)}</td></tr>
+    <tr class="total"><td>Окупаемость издержек ростом дохода</td>
+        <td>${s.outcome.breakEvenDays == null ? "—" : s.outcome.breakEvenDays.toFixed(1) + " дн."}</td></tr>
+  </table>
+  <ul class="notes">${s.outcome.note.map(n => `<li>ⓘ ${esc(n)}</li>`).join("")}</ul>`;
+}
+
+if (walletInput.value) load();
+</script>
+</body>
+</html>
