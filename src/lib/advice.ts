@@ -6,6 +6,8 @@ import { computeTA, suggestRange, type TaState } from "./ta.js";
 // + технический анализ (уровни, EMA, RSI, ATR, объёмный профиль).
 export interface MarketState {
   price: number;
+  change24hPct: number; // изменение цены за 24ч, %
+  change7dPct: number; // изменение цены за 7 дней, %
   vol48hPct: number; // реализованная вола, %/день
   trend72hPct: number; // изменение цены за 72ч, %
   drawdownFrom30dHighPct: number; // насколько ниже 30-дн максимума, %
@@ -13,6 +15,8 @@ export interface MarketState {
   regime: "risk-off" | "storm" | "trend-up" | "calm" | "normal";
   ta: TaState;
   suggestedRange: { lower: number; upper: number; basis: string };
+  // Пороги режимов — чтобы UI показывал их рядом со значениями.
+  thresholds: { riskOffPct: number; riskOnPct: number; stormVolPct: number; calmVolPct: number; trendUpPct: number };
 }
 
 export interface Advice {
@@ -48,8 +52,11 @@ export async function buildMarketState(product = "SOL-USD"): Promise<MarketState
   else if (vol <= CALM_VOL) regime = "calm";
 
   const ta = computeTA(candles, last.close);
+  const closeAgo = (h: number): number => candles[Math.max(0, candles.length - 1 - h)].close;
   return {
     price: last.close,
+    change24hPct: (last.close / closeAgo(24) - 1) * 100,
+    change7dPct: (last.close / closeAgo(24 * 7) - 1) * 100,
     vol48hPct: vol,
     trend72hPct: trend,
     drawdownFrom30dHighPct: dd,
@@ -57,6 +64,13 @@ export async function buildMarketState(product = "SOL-USD"): Promise<MarketState
     regime,
     ta,
     suggestedRange: suggestRange(ta, last.close),
+    thresholds: {
+      riskOffPct: RISK_OFF_PCT,
+      riskOnPct: RISK_ON_PCT,
+      stormVolPct: STORM_VOL,
+      calmVolPct: CALM_VOL,
+      trendUpPct: TREND_UP,
+    },
   };
 }
 
