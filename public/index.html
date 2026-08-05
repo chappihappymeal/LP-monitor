@@ -229,13 +229,29 @@ const REGIME_RU = { "risk-off": "RISK-OFF", storm: "ШТОРМ", "trend-up": "Т
 
 function marketBar(m) {
   if (!m) return "";
+  const ta = m.ta;
+  let taRow = "";
+  if (ta) {
+    const emaPos = m.price < ta.ema200 ? `ниже EMA200 (${ta.ema200.toFixed(1)}) 🐻` :
+      m.price > ta.ema50 ? `выше EMA50 (${ta.ema50.toFixed(1)})` : `между EMA50/200`;
+    const sup = ta.supports.map(l => `${l.price.toFixed(1)}<span style="opacity:.6">×${l.touches}</span>`).join(", ") || "—";
+    const res = ta.resistances.map(l => `${l.price.toFixed(1)}<span style="opacity:.6">×${l.touches}</span>`).join(", ") || "—";
+    taRow = `<div class="market" style="margin-top:6px">
+      <span>RSI: <b>${ta.rsi14.toFixed(0)}</b></span>
+      <span>ATR: <b>${ta.atrPct.toFixed(1)}%/д</b></span>
+      <span><b>${emaPos}</b></span>
+      <span>POC 90д: <b>${ta.poc.toFixed(1)}</b></span>
+      <span style="color:var(--green)">поддержки: <b>${sup}</b></span>
+      <span style="color:var(--yellow)">сопротивления: <b>${res}</b></span>
+    </div>`;
+  }
   return `<div class="market">
     <span class="regime ${m.regime}">${REGIME_RU[m.regime] ?? m.regime}</span>
     <span>SOL: <b>$${m.price.toFixed(2)}</b></span>
     <span>вола 48ч: <b>${m.vol48hPct.toFixed(2)}%/д</b></span>
     <span>тренд 72ч: <b>${m.trend72hPct >= 0 ? "+" : ""}${m.trend72hPct.toFixed(1)}%</b></span>
     <span>от 30-дн максимума: <b>−${m.drawdownFrom30dHighPct.toFixed(1)}%</b></span>
-  </div>`;
+  </div>` + taRow;
 }
 
 function adviceBlock(a) {
@@ -273,14 +289,14 @@ function render(data) {
     <div class="stat"><div class="lbl">PnL против HODL</div><div class="val ${cls(totalHodl)}">${fmtSigned(totalHodl)}</div></div>
   </div>`;
 
-  html += ps.map(renderPosition).join("");
+  html += ps.map(p => renderPosition(p, data.market)).join("");
   html += errs.map(p => `<div class="err">Позиция ${esc(p.positionAddress)}: ${esc(p.error)}</div>`).join("");
   out.innerHTML = html;
 
   for (const p of ps) bindSim(p);
 }
 
-function renderPosition(p) {
+function renderPosition(p, market) {
   const inRange = p.status === "priceInRange";
   const statusTxt = inRange ? "в диапазоне" :
     p.status === "priceBelowRange" ? "цена ниже диапазона" : "цена выше диапазона";
@@ -289,6 +305,18 @@ function renderPosition(p) {
   const w = p.upperPrice - p.lowerPrice;
   const vMin = p.lowerPrice - w * .25, vMax = p.upperPrice + w * .25;
   const pct = v => Math.min(99.5, Math.max(.5, (v - vMin) / (vMax - vMin) * 100));
+
+  // Метки уровней поддержки/сопротивления на шкале (для пулов с котировкой в USD)
+  let levelTicks = "";
+  if (market?.ta) {
+    for (const l of [...market.ta.supports, ...market.ta.resistances]) {
+      if (l.price > vMin && l.price < vMax) {
+        const color = l.price < market.price ? "var(--green)" : "var(--yellow)";
+        levelTicks += `<div title="${l.price < market.price ? "поддержка" : "сопротивление"} ${l.price.toFixed(1)} (${l.touches} касаний)"
+          style="position:absolute;top:0;bottom:0;width:0;border-left:2px dashed ${color};left:${pct(l.price)}%"></div>`;
+      }
+    }
+  }
 
   const pnl = p.pnl;
   const rewards = p.pendingRewards.map(r =>
@@ -301,6 +329,7 @@ function renderPosition(p) {
 
     <div class="rangebar">
       <div class="band" style="left:${pct(p.lowerPrice)}%; width:${pct(p.upperPrice) - pct(p.lowerPrice)}%"></div>
+      ${levelTicks}
       <div class="cur" style="left:${pct(p.currentPrice)}%"></div>
     </div>
     <div class="rangelbl">
