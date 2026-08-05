@@ -5,7 +5,8 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "cli": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backtest": "tsx src/backtest.ts"
   },
   "repository": {
     "type": "git",
