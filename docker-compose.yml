@@ -1,0 +1,37 @@
+# LP-monitor: веб + telegram-бот + headless chrome для скриншотов.
+# Версия образов задаётся APP_VERSION (по умолчанию v1):
+#   APP_VERSION=v2 docker compose build && APP_VERSION=v2 docker compose up -d
+services:
+  app:
+    build: .
+    image: lp-monitor-app:${APP_VERSION:-v1}
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # веб доступен из локальной сети: http://<хост>:3000
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data # журнал сделок и комментарии — переживают пересборку
+      - cache:/app/.cache # кэш свечей
+
+  chrome:
+    image: chromedp/headless-shell:131.0.6778.85
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+
+  bot:
+    build: ./bot
+    image: lp-monitor-bot:${APP_VERSION:-v1}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_URL: http://app:3000
+      CHROME_WS: ws://chrome:9222
+    depends_on:
+      - app
+      - chrome
+
+volumes:
+  cache:
