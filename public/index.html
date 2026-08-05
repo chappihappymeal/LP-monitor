@@ -466,7 +466,12 @@ function initChart(p) {
     series.setData(data.candles);
     // Стартовый зум: плотные таймфреймы показываем не целиком (год в упор —
     // каша), а последним окном; вся история доступна скроллом влево.
-    const visible = { "1h": 168, "4h": 180, "1d": 120 }[tf];
+    // На узком экране (мобильная вёрстка, скриншот бота) окно короче:
+    // 1д — последние 30 дней, иначе свечи слишком мелкие.
+    const narrow = el.clientWidth > 0 && el.clientWidth < 700;
+    const visible = (narrow
+      ? { "1h": 72, "4h": 90, "1d": 30 }
+      : { "1h": 168, "4h": 180, "1d": 120 })[tf];
     if (visible && data.candles.length > visible) {
       chart.timeScale().setVisibleLogicalRange({
         from: data.candles.length - visible,
