@@ -482,12 +482,15 @@ function initChart(p) {
     }
     if (!levelsDrawn) {
       levelsDrawn = true;
-      const line = (price, color, style, title) =>
-        series.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, title });
-      for (const l of data.levels.supports) line(l.price, "#3fb970", LightweightCharts.LineStyle.Dashed, `S ×${l.touches}`);
-      for (const l of data.levels.resistances) line(l.price, "#d29922", LightweightCharts.LineStyle.Dashed, `R ×${l.touches}`);
-      line(p.lowerPrice, "#58a6ff", LightweightCharts.LineStyle.Solid, "низ позиции");
-      line(p.upperPrice, "#58a6ff", LightweightCharts.LineStyle.Solid, "верх позиции");
+      // Без title: текст на полотне закрывал свечи. Уровень видно по цветной
+      // метке с ценой на правой оси (зелёный — поддержка, жёлтый —
+      // сопротивление, синий — границы позиции).
+      const line = (price, color, style) =>
+        series.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true });
+      for (const l of data.levels.supports) line(l.price, "#3fb970", LightweightCharts.LineStyle.Dashed);
+      for (const l of data.levels.resistances) line(l.price, "#d29922", LightweightCharts.LineStyle.Dashed);
+      line(p.lowerPrice, "#58a6ff", LightweightCharts.LineStyle.Solid);
+      line(p.upperPrice, "#58a6ff", LightweightCharts.LineStyle.Solid);
     }
   }
 
