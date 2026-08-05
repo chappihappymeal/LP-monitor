@@ -11,10 +11,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image/png"
 	"log"
 	"net"
 	"net/url"
@@ -125,33 +123,10 @@ func handleStats(bot *tgbotapi.BotAPI, chatID int64, cfg config) {
 		send(bot, tgbotapi.NewMessage(chatID, "Не получилось: "+err.Error()))
 		return
 	}
-	caption := "Открытые позиции · " + time.Now().Format("02.01 15:04")
-	file := tgbotapi.FileBytes{Name: "positions.png", Bytes: png}
-
-	// Telegram сжимает и ограничивает «фото» (сумма сторон ≤ 10000, соотношение
-	// ≤ 20) — длинный ретина-скрин уходит документом в полном качестве.
-	if w, h, ok := pngSize(png); ok && (w+h > 9500 || h > w*19) {
-		doc := tgbotapi.NewDocument(chatID, file)
-		doc.Caption = caption
-		send(bot, doc)
-		return
-	}
-	photo := tgbotapi.NewPhoto(chatID, file)
-	photo.Caption = caption
-	if _, err := bot.Send(photo); err != nil {
-		// не влезло в лимиты фото — шлём документом
-		doc := tgbotapi.NewDocument(chatID, file)
-		doc.Caption = caption
-		send(bot, doc)
-	}
-}
-
-func pngSize(data []byte) (w, h int, ok bool) {
-	c, err := png.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return 0, 0, false
-	}
-	return c.Width, c.Height, true
+	// Всегда документом: «фото» Telegram пережимает до каши.
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{Name: "positions.png", Bytes: png})
+	doc.Caption = "Открытые позиции · " + time.Now().Format("02.01 15:04")
+	send(bot, doc)
 }
 
 // Скриншот вкладки «Позиции»: ждём появления карточек (или ошибки), даём
@@ -187,7 +162,7 @@ func screenshotPositions(cfg config) ([]byte, error) {
 			chromedp.WithPollingTimeout(150*time.Second),
 			chromedp.WithPollingInterval(time.Second),
 		),
-		chromedp.Sleep(5*time.Second), // свечным графикам нужно время на отрисовку
+		chromedp.Sleep(5*time.Second),      // свечным графикам нужно время на отрисовку
 		chromedp.FullScreenshot(&buf, 100), // 100 → PNG без потерь
 	)
 	if err != nil {
