@@ -13,7 +13,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 80px; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 24px 16px 80px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -94,7 +94,7 @@
   .tfrow { display: flex; gap: 6px; margin: 12px 0 6px; }
   .tfrow button { font-size: 12px; padding: 4px 10px; cursor: pointer; border-radius: 20px; }
   .tfrow button.active { background: #1f6feb; border-color: #1f6feb; }
-  .chartbox { height: 300px; }
+  .chartbox { height: 400px; }
   .chartnote { color: var(--muted); font-size: 12.5px; margin: 8px 0; }
   .loading { color: var(--muted); margin: 20px 0; }
   .spin { display: inline-block; animation: spin 1s linear infinite; }
@@ -334,7 +334,17 @@ function initChart(p) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     series.setData(data.candles);
-    chart.timeScale().fitContent();
+    // Стартовый зум: плотные таймфреймы показываем не целиком (год в упор —
+    // каша), а последним окном; вся история доступна скроллом влево.
+    const visible = { "1h": 168, "4h": 180, "1d": 120 }[tf];
+    if (visible && data.candles.length > visible) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: data.candles.length - visible,
+        to: data.candles.length + 3,
+      });
+    } else {
+      chart.timeScale().fitContent();
+    }
     if (!levelsDrawn) {
       levelsDrawn = true;
       const line = (price, color, style, title) =>
