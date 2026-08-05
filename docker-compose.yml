@@ -15,7 +15,7 @@ services:
       - cache:/app/.cache # кэш свечей
 
   chrome:
-    image: chromedp/headless-shell:131.0.6778.85
+    image: chromedp/headless-shell:151.0.7922.72
     restart: unless-stopped
     init: true
     shm_size: 1gb
