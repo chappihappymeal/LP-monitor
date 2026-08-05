@@ -24,7 +24,17 @@ try {
     "risk-off": "RISK-OFF", storm: "ШТОРМ", "trend-up": "ТРЕНД ВВЕРХ", calm: "ШТИЛЬ", normal: "НЕЙТРАЛЬНО",
   };
   console.log(
-    `Рынок: ${regimeRu[market.regime]} | SOL $${market.price.toFixed(2)} | вола 48ч ${market.vol48hPct.toFixed(2)}%/д | тренд 72ч ${market.trend72hPct >= 0 ? "+" : ""}${market.trend72hPct.toFixed(1)}% | от 30-дн max −${market.drawdownFrom30dHighPct.toFixed(1)}%\n`,
+    `Рынок: ${regimeRu[market.regime]} | SOL $${market.price.toFixed(2)} | вола 48ч ${market.vol48hPct.toFixed(2)}%/д | тренд 72ч ${market.trend72hPct >= 0 ? "+" : ""}${market.trend72hPct.toFixed(1)}% | от 30-дн max −${market.drawdownFrom30dHighPct.toFixed(1)}%`,
+  );
+  const ta = market.ta;
+  console.log(
+    `ТА: RSI ${ta.rsi14.toFixed(0)} | ATR ${ta.atrPct.toFixed(1)}%/д | ${market.price < ta.ema200 ? "ниже" : "выше"} EMA200 (${ta.ema200.toFixed(1)}) | EMA50 ${ta.ema50.toFixed(1)} | POC 90д ${ta.poc.toFixed(1)}`,
+  );
+  console.log(
+    `Уровни: поддержки ${ta.supports.map((l) => `${l.price.toFixed(1)}(×${l.touches})`).join(", ") || "—"} | сопротивления ${ta.resistances.map((l) => `${l.price.toFixed(1)}(×${l.touches})`).join(", ") || "—"}`,
+  );
+  console.log(
+    `Диапазон по уровням: ${market.suggestedRange.lower.toFixed(1)} — ${market.suggestedRange.upper.toFixed(1)} (${market.suggestedRange.basis})\n`,
   );
 } catch {
   console.log("(рыночный контекст недоступен — советы отключены)\n");

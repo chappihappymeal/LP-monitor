@@ -1,7 +1,9 @@
 import { fetchHourlyCandles, realizedVolDaily, type Candle } from "./candles.js";
 import type { PositionView } from "./positions.js";
+import { computeTA, suggestRange, type TaState } from "./ta.js";
 
-// Рыночный контекст для советника: вола, тренд, просадка от 30-дн максимума.
+// Рыночный контекст для советника: вола, тренд, просадка от 30-дн максимума
+// + технический анализ (уровни, EMA, RSI, ATR, объёмный профиль).
 export interface MarketState {
   price: number;
   vol48hPct: number; // реализованная вола, %/день
@@ -9,6 +11,8 @@ export interface MarketState {
   drawdownFrom30dHighPct: number; // насколько ниже 30-дн максимума, %
   high30d: number;
   regime: "risk-off" | "storm" | "trend-up" | "calm" | "normal";
+  ta: TaState;
+  suggestedRange: { lower: number; upper: number; basis: string };
 }
 
 export interface Advice {
@@ -26,7 +30,8 @@ const CALM_VOL = 1.6; // ниже — узкие диапазоны в плюс
 const TREND_UP = 5; // рост за 72ч сильнее → LP отстаёт от HODL
 
 export async function buildMarketState(product = "SOL-USD"): Promise<MarketState> {
-  const candles = await fetchHourlyCandles(product, 31, 30 * 60_000);
+  // 240 дней часовок: хватает для EMA200 (дневной), уровней за 180д и профиля за 90д.
+  const candles = await fetchHourlyCandles(product, 240, 30 * 60_000);
   const last = candles[candles.length - 1];
   const vol = realizedVolDaily(candles, candles.length - 1, 48) * 100;
   const trendIdx = Math.max(0, candles.length - 73);
@@ -40,6 +45,7 @@ export async function buildMarketState(product = "SOL-USD"): Promise<MarketState
   else if (trend >= TREND_UP) regime = "trend-up";
   else if (vol <= CALM_VOL) regime = "calm";
 
+  const ta = computeTA(candles, last.close);
   return {
     price: last.close,
     vol48hPct: vol,
@@ -47,7 +53,39 @@ export async function buildMarketState(product = "SOL-USD"): Promise<MarketState
     drawdownFrom30dHighPct: dd,
     high30d,
     regime,
+    ta,
+    suggestedRange: suggestRange(ta, last.close),
   };
+}
+
+// Контекст уровней для текста совета: ближайшие поддержка/сопротивление,
+// неподтверждённые пробои, положение относительно EMA200.
+function levelContext(m: MarketState): string {
+  const parts: string[] = [];
+  const res = m.ta.resistances[0];
+  const sup = m.ta.supports[0];
+  if (res) {
+    const dist = (res.price / m.price - 1) * 100;
+    if (dist < 4 && res.touches >= 2) {
+      parts.push(
+        `цена у сопротивления ~${res.price.toFixed(1)} (${res.touches} касаний, +${dist.toFixed(1)}%) — пробой не подтверждён`,
+      );
+    } else {
+      parts.push(`сопротивление ~${res.price.toFixed(1)} (+${dist.toFixed(1)}%)`);
+    }
+  }
+  if (sup) {
+    const dist = (1 - sup.price / m.price) * 100;
+    parts.push(`поддержка ~${sup.price.toFixed(1)} (−${dist.toFixed(1)}%, ${sup.touches} касаний)`);
+  }
+  if (m.price < m.ta.ema200) {
+    parts.push(`ниже EMA200 (${m.ta.ema200.toFixed(1)}) — медвежий фон`);
+  } else if (m.price > m.ta.ema50) {
+    parts.push(`выше EMA50 (${m.ta.ema50.toFixed(1)})`);
+  }
+  if (m.ta.rsi14 <= 32) parts.push(`RSI ${m.ta.rsi14.toFixed(0)} — перепроданность`);
+  else if (m.ta.rsi14 >= 68) parts.push(`RSI ${m.ta.rsi14.toFixed(0)} — перекупленность`);
+  return parts.join("; ");
 }
 
 // Гамма-издержки позиции (LVR), $/день: V·σ²/(4·k(w)), где k — фактор ширины.
@@ -81,7 +119,7 @@ export function adviseForPosition(view: PositionView, m: MarketState): Advice {
   if (m.regime === "risk-off") {
     return {
       action: `Закрыть позицию и выйти в USDC: цена на ${m.drawdownFrom30dHighPct.toFixed(1)}% ниже 30-дн максимума (порог ${RISK_OFF_PCT}%)`,
-      gives: `Защита от продолжения падения — на годовой истории этот сигнал сокращал убыток с −$116 до −$22 на $320. Пере-вход: просадка от максимума < ${RISK_ON_PCT}%`,
+      gives: `Защита от продолжения падения — на годовой истории этот сигнал сокращал убыток с −$116 до −$22 на $320. Пере-вход: просадка от максимума < ${RISK_ON_PCT}% или разворот от поддержки. ${levelContext(m)}`,
       costUsd: exitCost,
       urgency: "high",
     };
@@ -105,9 +143,10 @@ export function adviseForPosition(view: PositionView, m: MarketState): Advice {
         urgency: "low",
       };
     }
+    const r = m.suggestedRange;
     return {
-      action: `Ребаланс: вернуть диапазон ±12% вокруг цены ${m.price.toFixed(2)} — позиция вне диапазона и не зарабатывает`,
-      gives: dailyFees != null ? `Возврат комиссий ≈ ${usd(dailyFees, 2)}/день; ${carryTxt}` : "Возврат комиссионного дохода",
+      action: `Ребаланс в диапазон по уровням ${r.lower.toFixed(1)} — ${r.upper.toFixed(1)} — позиция вне диапазона и не зарабатывает`,
+      gives: `${r.basis}. ${dailyFees != null ? `Возврат комиссий ≈ ${usd(dailyFees, 2)}/день; ` : ""}${carryTxt}. ${levelContext(m)}`,
       costUsd: rebalCost,
       urgency: "medium",
     };
@@ -117,7 +156,7 @@ export function adviseForPosition(view: PositionView, m: MarketState): Advice {
     const narrowGain = dailyFees != null ? dailyFees * 1.3 : 0; // ±12→±5 даёт ~2.3x комиссий, LVR тоже растёт — оценка чистыми ~+130%
     return {
       action: `Держать; вола ${m.vol48hPct.toFixed(1)}%/день — штиль. Можно сузить до ±5% для увеличения carry`,
-      gives: `Сейчас ${carryTxt}. Сужение до ±5% ≈ +${usd(narrowGain, 2)}/день чистыми, но потребует ребаланса при движении ±5% и вернёт риск при росте волы`,
+      gives: `Сейчас ${carryTxt}. Сужение до ±5% ≈ +${usd(narrowGain, 2)}/день чистыми, но потребует ребаланса при движении ±5% и вернёт риск при росте волы. ${levelContext(m)}`,
       costUsd: rebalCost,
       urgency: "low",
     };
@@ -125,14 +164,14 @@ export function adviseForPosition(view: PositionView, m: MarketState): Advice {
   if (m.regime === "trend-up") {
     return {
       action: `Ничего не делать. Тренд +${m.trend72hPct.toFixed(1)}%/72ч — LP в тренде отстаёт от удержания, но позиция в диапазоне и собирает комиссии`,
-      gives: carryTxt,
+      gives: `${carryTxt}. ${levelContext(m)}`,
       costUsd: 0,
       urgency: "low",
     };
   }
   return {
     action: "Ничего не делать — позиция в диапазоне, режим нормальный",
-    gives: `${carryTxt}. Любое действие сейчас стоит дороже, чем даст`,
+    gives: `${carryTxt}. Любое действие сейчас стоит дороже, чем даст. ${levelContext(m)}`,
     costUsd: 0,
     urgency: "low",
   };
@@ -157,16 +196,18 @@ export function adviseNoPosition(m: MarketState): Advice {
     };
   }
   if (m.regime === "calm") {
+    const r = m.suggestedRange;
     return {
-      action: `Можно заходить: вола ${m.vol48hPct.toFixed(1)}%/день — штиль. Диапазон ±5–12% вокруг ${m.price.toFixed(2)}`,
-      gives: "В штиль carry узких диапазонов положительный (см. backtest:history)",
+      action: `Можно заходить: вола ${m.vol48hPct.toFixed(1)}%/день — штиль. Диапазон по уровням: ${r.lower.toFixed(1)} — ${r.upper.toFixed(1)}`,
+      gives: `${r.basis}. В штиль carry узких диапазонов положительный. ${levelContext(m)}`,
       costUsd: null,
       urgency: "low",
     };
   }
+  const r = m.suggestedRange;
   return {
-    action: `Нейтрально: вола ${m.vol48hPct.toFixed(1)}%/день, тренд ${m.trend72hPct >= 0 ? "+" : ""}${m.trend72hPct.toFixed(1)}%/72ч. Если заходить — широкий диапазон ±12%`,
-    gives: "Carry около нуля: LP ≈ HODL, решает дальнейший режим",
+    action: `Нейтрально: вола ${m.vol48hPct.toFixed(1)}%/день, тренд ${m.trend72hPct >= 0 ? "+" : ""}${m.trend72hPct.toFixed(1)}%/72ч. Если заходить — диапазон по уровням ${r.lower.toFixed(1)} — ${r.upper.toFixed(1)}`,
+    gives: `${r.basis}. Carry около нуля: LP ≈ HODL, решает дальнейший режим. ${levelContext(m)}`,
     costUsd: null,
     urgency: "low",
   };
