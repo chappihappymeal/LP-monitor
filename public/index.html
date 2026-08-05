@@ -611,6 +611,11 @@ function renderPosition(p, market) {
   const rewards = p.pendingRewards.map(r =>
     `${fmtNum(r.uiAmount)} ${esc(r.symbol)} (${fmtUsd(r.usd, 4)})`).join(", ");
 
+  // Расчётный fee позиции за 24ч: доля в активной ликвидности × комиссии пула.
+  const dailyFeesUsd = p.pool?.fees24hUsd != null && p.shareOfPoolPct != null
+    ? p.pool.fees24hUsd * p.shareOfPoolPct / 100
+    : null;
+
   // Отметка цены входа на шкале
   const entry = entryPrice(p);
   const entryTick = entry != null && entry > vMin && entry < vMax
@@ -657,9 +662,9 @@ function renderPosition(p, market) {
       <div class="kv"><div class="lbl">Вложено (историч.)</div>
         <div class="val">${fmtUsd(pnl.depositedValueUsd)}</div>
         <div class="hint">${pnl.ageDays != null ? "возраст: " + pnl.ageDays.toFixed(1) + " дн." : ""}</div></div>
-      <div class="kv"><div class="lbl">Доход собран + выведено</div>
-        <div class="val">${fmtUsd(pnl.collectedYieldUsd + pnl.withdrawnValueUsd)}</div>
-        <div class="hint">сетевые комиссии: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
+      <div class="kv"><div class="lbl">Расчётный fee за 24ч</div>
+        <div class="val ${cls(dailyFeesUsd)}">${fmtUsd(dailyFeesUsd, 4)}</div>
+        <div class="hint">собрано+выведено: ${fmtUsd(pnl.collectedYieldUsd + pnl.withdrawnValueUsd)} · сеть: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
       <div class="kv"><div class="lbl">PnL всего</div>
         <div class="val ${cls(pnl.totalPnlUsd)}">${fmtSigned(pnl.totalPnlUsd)}</div>
         <div class="hint">реализованная доходность: ${pnl.realizedAprPct == null ? "н/д" : pnl.realizedAprPct.toFixed(1) + "% годовых"}</div></div>
