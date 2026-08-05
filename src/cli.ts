@@ -1,6 +1,7 @@
 import { fetchWalletPositions, hydratePosition, makeRpc } from "./lib/positions.js";
 import { computePnl } from "./lib/history.js";
 import { simulateRebalance } from "./lib/simulate.js";
+import { adviseForPosition, adviseNoPosition, buildMarketState, type MarketState } from "./lib/advice.js";
 
 const [wallet, cmd, ...rest] = process.argv.slice(2);
 
@@ -16,9 +17,25 @@ const usd = (v: number | null | undefined, digits = 2): string =>
 const num = (v: number, digits = 6): string => v.toFixed(digits).replace(/\.?0+$/, "");
 
 const rpc = makeRpc();
+let market: MarketState | null = null;
+try {
+  market = await buildMarketState();
+  const regimeRu: Record<string, string> = {
+    "risk-off": "RISK-OFF", storm: "ШТОРМ", "trend-up": "ТРЕНД ВВЕРХ", calm: "ШТИЛЬ", normal: "НЕЙТРАЛЬНО",
+  };
+  console.log(
+    `Рынок: ${regimeRu[market.regime]} | SOL $${market.price.toFixed(2)} | вола 48ч ${market.vol48hPct.toFixed(2)}%/д | тренд 72ч ${market.trend72hPct >= 0 ? "+" : ""}${market.trend72hPct.toFixed(1)}% | от 30-дн max −${market.drawdownFrom30dHighPct.toFixed(1)}%\n`,
+  );
+} catch {
+  console.log("(рыночный контекст недоступен — советы отключены)\n");
+}
 const positions = await fetchWalletPositions(rpc, wallet);
 if (positions.length === 0) {
   console.log("Позиций Orca Whirlpools на этом кошельке не найдено.");
+  if (market) {
+    const a = adviseNoPosition(market);
+    console.log(`\n💡 СОВЕТ: ${a.action}\n   Что даст: ${a.gives}`);
+  }
   process.exit(0);
 }
 console.log(`Найдено позиций: ${positions.length}\n`);
@@ -46,6 +63,12 @@ for (const pos of positions) {
     console.log(
       `    Пул: TVL ${usd(view.pool.tvlUsd, 0)}, объём 24ч ${usd(view.pool.volume24hUsd, 0)}, комиссии 24ч ${usd(view.pool.fees24hUsd, 0)}; APR позиции ≈ ${view.pool.positionFeeAprPct == null ? "н/д" : view.pool.positionFeeAprPct.toFixed(1) + "%"}`,
     );
+  }
+  if (market) {
+    const a = adviseForPosition(view, market);
+    const icon = a.urgency === "high" ? "🚨" : a.urgency === "medium" ? "⚠️" : "✅";
+    console.log(`    ${icon} СОВЕТ: ${a.action}${a.costUsd != null && a.costUsd >= 0.005 ? ` (стоимость ~${usd(a.costUsd)})` : ""}`);
+    console.log(`       Что даст: ${a.gives}`);
   }
   try {
     const pnl = await computePnl(ctx, view);

@@ -12,6 +12,7 @@ import {
 import { computePnl } from "./lib/history.js";
 import { simulateRebalance } from "./lib/simulate.js";
 import { fetchHourlyCandles, realizedVolDaily } from "./lib/candles.js";
+import { adviseForPosition, adviseNoPosition, buildMarketState } from "./lib/advice.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -35,6 +36,12 @@ app.get("/api/positions", async (req, res) => {
     return;
   }
   try {
+    let market = null;
+    try {
+      market = await buildMarketState();
+    } catch (e) {
+      console.warn("market state failed:", e);
+    }
     const positions = await fetchWalletPositions(rpc, wallet);
     const out = [];
     for (const pos of positions) {
@@ -49,13 +56,16 @@ app.get("/api/positions", async (req, res) => {
             console.warn(`pnl failed for ${view.positionAddress}:`, e);
           }
         }
-        out.push({ ...view, pnl });
+        const advice = market ? adviseForPosition(view, market) : null;
+        out.push({ ...view, pnl, advice });
       } catch (e) {
         console.warn(`hydrate failed for ${pos.address}:`, e);
         out.push({ positionAddress: pos.address, error: String(e) });
       }
     }
-    res.json({ wallet, positions: out, fetchedAt: Date.now() });
+    const walletAdvice =
+      market && out.filter((p: any) => !p.error).length === 0 ? adviseNoPosition(market) : null;
+    res.json({ wallet, positions: out, market, walletAdvice, fetchedAt: Date.now() });
   } catch (e: any) {
     console.error("positions error:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
