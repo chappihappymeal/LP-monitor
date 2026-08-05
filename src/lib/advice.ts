@@ -20,6 +20,8 @@ export interface Advice {
   gives: string; // что это даст
   costUsd: number | null; // сколько будет стоить
   urgency: "high" | "medium" | "low";
+  risk?: "low" | "medium" | "high"; // уровень риска альтернативы
+  recommended?: boolean; // какую из альтернатив советуем в текущем режиме
 }
 
 // Пороги — из бэктестов на годе реальной истории (см. backtest-guard/history).
@@ -175,6 +177,82 @@ export function adviseForPosition(view: PositionView, m: MarketState): Advice {
     costUsd: 0,
     urgency: "low",
   };
+}
+
+// ── Три альтернативы: низкий / средний / высокий риск ───────────────────────
+// view = null — кошелёк без позиции (вход вместо ребаланса).
+export function adviseAlternatives(view: PositionView | null, m: MarketState): Advice[] {
+  const price = m.price;
+  const value = view?.valueUsd ?? 0;
+  const feeRate = (view?.feeRatePct ?? 0.04) / 100;
+  const exitCost = view ? 0.25 * value * feeRate + 0.12 + 0.5 * value * 0.0005 : null;
+  const rebalCost = view ? 0.5 * value * feeRate + 0.15 : null;
+  const dailyFees =
+    view?.pool?.fees24hUsd != null && view.shareOfPoolPct != null
+      ? view.pool.fees24hUsd * (view.shareOfPoolPct / 100)
+      : null;
+
+  // Оценка carry нового диапазона: комиссии масштабируем по концентрации
+  // (обратно ширине), гамма-издержки считаем честно по новым границам.
+  const carryEst = (lower: number, upper: number): string => {
+    if (view == null || dailyFees == null) return "";
+    const curWidth = (view.upperPrice - view.lowerPrice) / view.currentPrice;
+    const newWidth = Math.max(0.005, (upper - lower) / price);
+    const fees = dailyFees * (curWidth / newWidth);
+    const lvr = lvrPerDay(value, m.vol48hPct, lower, upper, price);
+    const carry = fees - lvr;
+    return ` Оценка carry ≈ ${carry >= 0 ? "+" : "−"}${usd(Math.abs(carry))}/день (комиссии ~${usd(fees)} − гамма ~${usd(lvr)}).`;
+  };
+
+  const rec: "low" | "medium" | "high" =
+    m.regime === "risk-off" || m.regime === "storm" ? "low" : m.regime === "calm" ? "high" : "medium";
+
+  // Низкий риск: выйти/не заходить.
+  const lowWhy =
+    m.regime === "risk-off"
+      ? `цена на ${m.drawdownFrom30dHighPct.toFixed(1)}% ниже 30-дн максимума (порог ${RISK_OFF_PCT}%)`
+      : m.regime === "storm"
+        ? `вола ${m.vol48hPct.toFixed(1)}%/день выше штормового порога ${STORM_VOL}%`
+        : `зафиксироваться и переждать без рыночного риска`;
+  const low: Advice = {
+    risk: "low",
+    recommended: rec === "low",
+    action: view ? `Закрыть позицию и выйти в USDC: ${lowWhy}` : `Не заходить, остаться в USDC: ${lowWhy}`,
+    gives: `Ноль импермалосса и гамма-издержек. Пере-вход: просадка от максимума < ${RISK_ON_PCT}% и вола ниже ${STORM_VOL}%/день. ${levelContext(m)}`,
+    costUsd: exitCost,
+    urgency: m.regime === "risk-off" || m.regime === "storm" ? "high" : "low",
+  };
+
+  // Средний риск: диапазон по уровням — низ в поддержку, верх в сопротивление.
+  const r = m.suggestedRange;
+  const medium: Advice = {
+    risk: "medium",
+    recommended: rec === "medium",
+    action: `${view ? "Сместить диапазон" : "Зайти"} по уровням: ${r.lower.toFixed(1)} — ${r.upper.toFixed(1)}`,
+    gives: `${r.basis}.${carryEst(r.lower, r.upper)} Диапазон опирается на протестированные уровни — меньше шансов вылететь на шуме.`,
+    costUsd: rebalCost,
+    urgency: view && view.status !== "priceInRange" ? "medium" : "low",
+  };
+
+  // Высокий риск: узкий диапазон, прижатый к сопротивлению.
+  const res = m.ta.resistances.find(
+    (l) => l.touches >= 2 && l.price / price - 1 > 0.02 && l.price / price - 1 < 0.25,
+  );
+  const hiLower = res ? price * 0.99 : price * (1 - m.ta.atrPct / 100);
+  const hiUpper = res ? res.price * 1.005 : price * (1 + m.ta.atrPct / 100);
+  const hiBasis = res
+    ? `узкий коридор под сопротивлением ~${res.price.toFixed(1)} (${res.touches} касаний): низ — цена −1%`
+    : `сильного сопротивления рядом нет — узкий ±ATR (${m.ta.atrPct.toFixed(1)}%) вокруг цены`;
+  const high: Advice = {
+    risk: "high",
+    recommended: rec === "high",
+    action: `${view ? "Пере-встать узко" : "Зайти узко"}: ${hiLower.toFixed(1)} — ${hiUpper.toFixed(1)}`,
+    gives: `${hiBasis}.${carryEst(hiLower, hiUpper)} Максимальная концентрация и комиссии, но выход цены за границы — быстрый: нужен присмотр или бот.`,
+    costUsd: rebalCost,
+    urgency: "low",
+  };
+
+  return [low, medium, high];
 }
 
 // Совет для кошелька без позиций в отслеживаемом пуле.

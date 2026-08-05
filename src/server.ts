@@ -11,8 +11,20 @@ import {
 } from "./lib/positions.js";
 import { computePnl } from "./lib/history.js";
 import { simulateRebalance } from "./lib/simulate.js";
-import { fetchHourlyCandles, realizedVolDaily } from "./lib/candles.js";
-import { adviseForPosition, adviseNoPosition, buildMarketState } from "./lib/advice.js";
+import {
+  aggregateCandles,
+  ensureCandleStore,
+  fetchHourlyCandles,
+  realizedVolDaily,
+  type Timeframe,
+} from "./lib/candles.js";
+import {
+  adviseAlternatives,
+  adviseForPosition,
+  adviseNoPosition,
+  buildMarketState,
+} from "./lib/advice.js";
+import { computeTA, suggestRange } from "./lib/ta.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -57,15 +69,17 @@ app.get("/api/positions", async (req, res) => {
           }
         }
         const advice = market ? adviseForPosition(view, market) : null;
-        out.push({ ...view, pnl, advice });
+        const alternatives = market ? adviseAlternatives(view, market) : null;
+        out.push({ ...view, pnl, advice, alternatives });
       } catch (e) {
         console.warn(`hydrate failed for ${pos.address}:`, e);
         out.push({ positionAddress: pos.address, error: String(e) });
       }
     }
-    const walletAdvice =
-      market && out.filter((p: any) => !p.error).length === 0 ? adviseNoPosition(market) : null;
-    res.json({ wallet, positions: out, market, walletAdvice, fetchedAt: Date.now() });
+    const noPositions = market && out.filter((p: any) => !p.error).length === 0;
+    const walletAdvice = noPositions ? adviseNoPosition(market!) : null;
+    const walletAlternatives = noPositions ? adviseAlternatives(null, market!) : null;
+    res.json({ wallet, positions: out, market, walletAdvice, walletAlternatives, fetchedAt: Date.now() });
   } catch (e: any) {
     console.error("positions error:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
@@ -150,6 +164,48 @@ app.get("/api/market", async (_req, res) => {
   if (!("error" in sol)) marketCache = { at: Date.now(), data };
   res.json(data);
 });
+
+// ── Свечи для графика в карточке позиции ────────────────────────────────────
+const CANDLE_PRODUCTS = new Set(["SOL-USD", "ETH-USD", "BTC-USD"]);
+const TIMEFRAMES = new Set<Timeframe>(["1h", "4h", "1d", "1w", "1M"]);
+const candleProductsSeen = new Set<string>(["SOL-USD"]);
+
+app.get("/api/candles", async (req, res) => {
+  const product = String(req.query.product ?? "SOL-USD");
+  const tf = String(req.query.tf ?? "1h") as Timeframe;
+  if (!CANDLE_PRODUCTS.has(product) || !TIMEFRAMES.has(tf)) {
+    res.status(400).json({ error: "Неизвестный product или tf" });
+    return;
+  }
+  try {
+    candleProductsSeen.add(product);
+    const hourly = await ensureCandleStore(product);
+    const price = hourly[hourly.length - 1].close;
+    const ta = computeTA(hourly.slice(-240 * 24), price);
+    res.json({
+      product,
+      tf,
+      candles: aggregateCandles(hourly, tf).map(({ volumeUsd, ...c }) => c),
+      levels: {
+        price,
+        supports: ta.supports,
+        resistances: ta.resistances,
+        suggestedRange: suggestRange(ta, price),
+      },
+    });
+  } catch (e: any) {
+    console.error("candles error:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Дотяжка store фоном: при старте и раз в 15 минут (внутри — троттлинг 10 мин).
+const topUpStores = (): void => {
+  for (const p of candleProductsSeen)
+    ensureCandleStore(p).catch((e) => console.warn(`candle store ${p}:`, e));
+};
+topUpStores();
+setInterval(topUpStores, 15 * 60_000).unref();
 
 app.listen(PORT, () => {
   console.log(`LP-monitor запущен: http://localhost:${PORT}`);

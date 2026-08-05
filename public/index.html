@@ -87,6 +87,15 @@
   .advice .icon { font-size: 18px; }
   .advice .a-action { font-weight: 700; }
   .advice .a-give { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .advgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin: 12px 0; }
+  .advgrid .advice { margin: 0; }
+  .advice.rec { outline: 2px solid var(--accent); }
+  .a-risk { font-size: 11.5px; font-weight: 700; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
+  .tfrow { display: flex; gap: 6px; margin: 12px 0 6px; }
+  .tfrow button { font-size: 12px; padding: 4px 10px; cursor: pointer; border-radius: 20px; }
+  .tfrow button.active { background: #1f6feb; border-color: #1f6feb; }
+  .chartbox { height: 300px; }
+  .chartnote { color: var(--muted); font-size: 12.5px; margin: 8px 0; }
   .loading { color: var(--muted); margin: 20px 0; }
   .spin { display: inline-block; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -119,6 +128,7 @@
   </div>
 </div>
 
+<script src="/vendor/lightweight-charts.standalone.production.js"></script>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const out = $("#out");
@@ -264,11 +274,96 @@ function adviceBlock(a) {
   </div></div>`;
 }
 
+// Три альтернативы (лоу/средний/рисковый), рекомендуемая подсвечена.
+const RISK_RU = { low: "🟢 низкий риск", medium: "🟡 средний риск", high: "🔴 рискованный" };
+function advGrid(list) {
+  if (!list || !list.length) return "";
+  return `<div class="advgrid">` + list.map(a => {
+    const icon = a.urgency === "high" ? "🚨" : a.urgency === "medium" ? "⚠️" : "✅";
+    const cost = a.costUsd == null ? "" : a.costUsd < 0.005 ? " · стоимость: $0" : ` · стоимость: ~$${a.costUsd.toFixed(2)}`;
+    return `<div class="advice ${a.urgency}${a.recommended ? " rec" : ""}"><span class="icon">${icon}</span><div>
+      <div class="a-risk">${RISK_RU[a.risk] ?? ""}${a.recommended ? " · рекомендуем" : ""}</div>
+      <div class="a-action">${esc(a.action)}${cost}</div>
+      <div class="a-give">${esc(a.gives)}</div>
+    </div></div>`;
+  }).join("") + `</div>`;
+}
+
+// ── Свечной график в карточке позиции ──
+const STABLES = new Set(["USDC", "USDT", "USDH", "PYUSD"]);
+const CHART_BASES = new Set(["SOL", "ETH", "BTC"]);
+const TF_RU = { "1h": "1ч", "4h": "4ч", "1d": "1д", "1w": "1н", "1M": "1М" };
+
+// Продукт Coinbase по паре: не-стейбл токен против USD; без стейбла в паре — нет графика.
+function productFor(p) {
+  const a = p.tokenA.symbol, b = p.tokenB.symbol;
+  const base = STABLES.has(a) ? b : STABLES.has(b) ? a : null;
+  return base && CHART_BASES.has(base) ? base + "-USD" : null;
+}
+
+function chartSection(p) {
+  if (!productFor(p)) return '<div class="chartnote">Свечной график недоступен для этой пары</div>';
+  return `<div class="tfrow" data-role="tfs">
+    ${Object.keys(TF_RU).map(tf => `<button data-tf="${tf}"${tf === "1d" ? ' class="active"' : ""}>${TF_RU[tf]}</button>`).join("")}
+  </div>
+  <div class="chartbox" data-role="chart"></div>`;
+}
+
+function initChart(p) {
+  const product = productFor(p);
+  const card = document.getElementById("card-" + p.positionAddress);
+  if (!product || !card || !window.LightweightCharts) return;
+  const el = card.querySelector('[data-role="chart"]');
+  if (!el) return;
+
+  const chart = LightweightCharts.createChart(el, {
+    autoSize: true,
+    layout: { background: { type: "solid", color: "transparent" }, textColor: "#8b96a5", attributionLogo: false },
+    grid: { vertLines: { color: "#1c2330" }, horzLines: { color: "#1c2330" } },
+    timeScale: { timeVisible: true, borderColor: "#2d3644" },
+    rightPriceScale: { borderColor: "#2d3644" },
+  });
+  const series = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: "#3fb970", downColor: "#f85149",
+    wickUpColor: "#3fb970", wickDownColor: "#f85149", borderVisible: false,
+  });
+
+  let levelsDrawn = false;
+  async function setTf(tf) {
+    const res = await fetch(`/api/candles?product=${product}&tf=${tf}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    series.setData(data.candles);
+    chart.timeScale().fitContent();
+    if (!levelsDrawn) {
+      levelsDrawn = true;
+      const line = (price, color, style, title) =>
+        series.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, title });
+      for (const l of data.levels.supports) line(l.price, "#3fb970", LightweightCharts.LineStyle.Dashed, `S ×${l.touches}`);
+      for (const l of data.levels.resistances) line(l.price, "#d29922", LightweightCharts.LineStyle.Dashed, `R ×${l.touches}`);
+      line(p.lowerPrice, "#58a6ff", LightweightCharts.LineStyle.Solid, "низ позиции");
+      line(p.upperPrice, "#58a6ff", LightweightCharts.LineStyle.Solid, "верх позиции");
+    }
+  }
+
+  card.querySelector('[data-role="tfs"]').addEventListener("click", e => {
+    const b = e.target.closest("button[data-tf]");
+    if (!b) return;
+    for (const x of e.currentTarget.querySelectorAll("button")) x.classList.toggle("active", x === b);
+    setTf(b.dataset.tf).catch(err => console.warn("chart:", err));
+  });
+
+  setTf("1d").catch(err => {
+    el.outerHTML = `<div class="err">График: ${esc(err.message || err)} (первая загрузка истории может занять ~30 сек — обнови страницу)</div>`;
+  });
+}
+
 function render(data) {
   const ps = data.positions.filter(p => !p.error);
   const errs = data.positions.filter(p => p.error);
   if (ps.length === 0 && errs.length === 0) {
-    out.innerHTML = marketBar(data.market) + adviceBlock(data.walletAdvice) +
+    out.innerHTML = marketBar(data.market) +
+      (advGrid(data.walletAlternatives) || adviceBlock(data.walletAdvice)) +
       '<div class="card">На этом кошельке позиций Orca Whirlpools не найдено.</div>';
     return;
   }
@@ -293,7 +388,7 @@ function render(data) {
   html += errs.map(p => `<div class="err">Позиция ${esc(p.positionAddress)}: ${esc(p.error)}</div>`).join("");
   out.innerHTML = html;
 
-  for (const p of ps) bindSim(p);
+  for (const p of ps) { bindSim(p); initChart(p); }
 }
 
 function renderPosition(p, market) {
@@ -325,7 +420,7 @@ function renderPosition(p, market) {
   return `<div class="card" id="card-${p.positionAddress}">
     <h2>${esc(p.pair)} · ${p.feeRatePct}% <span class="badge ${inRange ? "in" : "out"}">${statusTxt}</span></h2>
     <div class="addr">${esc(p.positionAddress)}</div>
-    ${adviceBlock(p.advice)}
+    ${advGrid(p.alternatives) || adviceBlock(p.advice)}
 
     <div class="rangebar">
       <div class="band" style="left:${pct(p.lowerPrice)}%; width:${pct(p.upperPrice) - pct(p.lowerPrice)}%"></div>
@@ -337,6 +432,8 @@ function renderPosition(p, market) {
       <span>цена: <b style="color:var(--text)">${fmtNum(p.currentPrice, 4)}</b></span>
       <span>${fmtNum(p.upperPrice, 4)}</span>
     </div>
+
+    ${chartSection(p)}
 
     <div class="grid">
       <div class="kv"><div class="lbl">Стоимость позиции</div>
