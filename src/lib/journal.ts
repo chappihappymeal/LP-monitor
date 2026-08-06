@@ -143,6 +143,16 @@ export async function fetchWalletUsd(
   return usd;
 }
 
+// Цена на момент последнего открытия позиции (для позиционных алертов бота).
+export function entryPriceFor(wallet: string, position: string): number | null {
+  const j = loadJournal(wallet);
+  for (let i = j.events.length - 1; i >= 0; i--) {
+    const e = j.events[i];
+    if (e.position === position && e.type === "open") return e.priceUsd;
+  }
+  return null;
+}
+
 // ── Дневной лог fee (для отчёта бота и будущего графика) ────────────────────
 
 export interface FeeLogEntry {

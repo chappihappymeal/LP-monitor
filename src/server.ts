@@ -21,6 +21,7 @@ import {
 import { computeTA, suggestRange } from "./lib/ta.js";
 import {
   appendFeeLog,
+  entryPriceFor,
   fetchWalletUsd,
   getSyncState,
   journalSummary,
@@ -233,6 +234,7 @@ app.get("/api/rangestatus", async (req, res) => {
         lower: view.lowerPrice,
         upper: view.upperPrice,
         price: view.currentPrice,
+        entry: entryPriceFor(wallet, view.positionAddress),
         status: view.status,
       });
     }

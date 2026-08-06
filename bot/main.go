@@ -338,11 +338,12 @@ func fetchFeeReport(cfg config) (feeEntry, error) {
 // ── Позиционный алерт: цена у края диапазона ────────────────────────────────
 
 type rangePos struct {
-	PositionAddress string  `json:"positionAddress"`
-	Pair            string  `json:"pair"`
-	Lower           float64 `json:"lower"`
-	Upper           float64 `json:"upper"`
-	Price           float64 `json:"price"`
+	PositionAddress string   `json:"positionAddress"`
+	Pair            string   `json:"pair"`
+	Lower           float64  `json:"lower"`
+	Upper           float64  `json:"upper"`
+	Price           float64  `json:"price"`
+	Entry           *float64 `json:"entry"` // цена входа из журнала; null — нет данных
 }
 
 type zoneState struct {
@@ -384,12 +385,25 @@ func rangeWatcher(bot *tgbotapi.BotAPI, cfg config) {
 			if p.Upper <= p.Lower {
 				continue
 			}
-			pct := (p.Price - p.Lower) / (p.Upper - p.Lower) * 100
+			// Точка отсчёта — цена входа (из журнала); нет данных или вне
+			// диапазона — середина. Прогресс: сколько пути от входа до границы
+			// уже пройдено ценой.
+			entry := (p.Lower + p.Upper) / 2
+			if p.Entry != nil && *p.Entry > p.Lower && *p.Entry < p.Upper {
+				entry = *p.Entry
+			}
+			var prog float64
 			zone := "mid"
-			if pct >= cfg.edgePct {
-				zone = "upper"
-			} else if pct <= 100-cfg.edgePct {
-				zone = "lower"
+			if p.Price >= entry && p.Upper > entry {
+				prog = (p.Price - entry) / (p.Upper - entry) * 100
+				if prog >= cfg.edgePct {
+					zone = "upper"
+				}
+			} else if p.Price < entry && entry > p.Lower {
+				prog = (entry - p.Price) / (entry - p.Lower) * 100
+				if prog >= cfg.edgePct {
+					zone = "lower"
+				}
 			}
 			prev := state[p.PositionAddress]
 			if zone == "mid" {
@@ -402,11 +416,11 @@ func rangeWatcher(bot *tgbotapi.BotAPI, cfg config) {
 			state[p.PositionAddress] = zoneState{zone: zone, at: time.Now()}
 			var txt string
 			if zone == "upper" {
-				txt = fmt.Sprintf("⚠️ %s: цена $%.2f прошла %.0f%% диапазона %.2f–%.2f (до верхней границы %+.1f%%).",
-					p.Pair, p.Price, pct, p.Lower, p.Upper, (p.Upper/p.Price-1)*100)
+				txt = fmt.Sprintf("⚠️ %s: цена $%.2f прошла %.0f%% пути от входа ($%.2f) к верхней границе %.2f (осталось %+.1f%%).",
+					p.Pair, p.Price, prog, entry, p.Upper, (p.Upper/p.Price-1)*100)
 			} else {
-				txt = fmt.Sprintf("⚠️ %s: цена $%.2f опустилась к %.0f%% диапазона %.2f–%.2f (до нижней границы %+.1f%%).",
-					p.Pair, p.Price, pct, p.Lower, p.Upper, (p.Lower/p.Price-1)*100)
+				txt = fmt.Sprintf("⚠️ %s: цена $%.2f прошла %.0f%% пути от входа ($%.2f) к нижней границе %.2f (осталось %+.1f%%).",
+					p.Pair, p.Price, prog, entry, p.Lower, (p.Lower/p.Price-1)*100)
 			}
 			send(bot, tgbotapi.NewMessage(cfg.allowedID,
 				txt+"\nПора думать, что делать — жми «"+btnStats+"»."))
