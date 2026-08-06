@@ -72,12 +72,12 @@ func loadConfig() (config, error) {
 	c.product = envOr("ALERT_PRODUCT", "SOL-USD")
 	c.fastPct = envFloat("ALERT_FAST_PCT", 1.5)
 	c.hourPct = envFloat("ALERT_HOUR_PCT", 4)
-	c.poll = time.Duration(envFloat("ALERT_POLL_SEC", 60)) * time.Second
-	c.cooldown = time.Duration(envFloat("ALERT_COOLDOWN_MIN", 30)) * time.Minute
+	c.poll = time.Duration(envFloat("ALERT_POLL_SEC", 60) * float64(time.Second))
+	c.cooldown = time.Duration(envFloat("ALERT_COOLDOWN_MIN", 30) * float64(time.Minute))
 	c.reportHour = int(envFloat("REPORT_HOUR", 10))
 	c.edgePct = envFloat("RANGE_EDGE_PCT", 75)
-	c.rangePoll = time.Duration(envFloat("RANGE_POLL_MIN", 5)) * time.Minute
-	c.rangeCooldown = time.Duration(envFloat("RANGE_COOLDOWN_MIN", 120)) * time.Minute
+	c.rangePoll = time.Duration(envFloat("RANGE_POLL_MIN", 5) * float64(time.Minute))
+	c.rangeCooldown = time.Duration(envFloat("RANGE_COOLDOWN_MIN", 120) * float64(time.Minute))
 	return c, nil
 }
 
