@@ -35,6 +35,7 @@ services:
     environment:
       APP_URL: http://app:3000
       CHROME_WS: ws://chrome:9222
+      TZ: ${TZ:-Asia/Bangkok} # «10 утра» ежедневного отчёта — в этом поясе
     depends_on:
       - app
       - chrome

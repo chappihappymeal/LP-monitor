@@ -20,6 +20,7 @@ import {
 } from "./lib/advice.js";
 import { computeTA, suggestRange } from "./lib/ta.js";
 import {
+  appendFeeLog,
   fetchWalletUsd,
   getSyncState,
   journalSummary,
@@ -183,6 +184,33 @@ app.get("/api/journal", (req, res) => {
     });
   } catch (e: any) {
     console.error("journal error:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Замер fee: pending yield и расчётный темп по открытым позициям; каждая
+// запись сохраняется в data/feelog-<wallet>.json — сырьё для будущего графика.
+app.get("/api/feereport", async (req, res) => {
+  const wallet = req.query.wallet;
+  if (!isValidAddress(wallet)) {
+    res.status(400).json({ error: "Некорректный адрес кошелька" });
+    return;
+  }
+  try {
+    const positions = await fetchWalletPositions(rpc, wallet);
+    let pending = 0;
+    let est = 0;
+    let value = 0;
+    for (const pos of positions) {
+      const { view } = await hydratePosition(rpc, pos);
+      pending += view.pendingYieldUsd ?? 0;
+      value += view.valueUsd ?? 0;
+      if (view.pool?.fees24hUsd != null && view.shareOfPoolPct != null)
+        est += (view.pool.fees24hUsd * view.shareOfPoolPct) / 100;
+    }
+    res.json(appendFeeLog(wallet, pending, est, value));
+  } catch (e: any) {
+    console.error("feereport error:", e);
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });

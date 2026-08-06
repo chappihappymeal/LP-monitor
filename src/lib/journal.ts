@@ -143,6 +143,51 @@ export async function fetchWalletUsd(
   return usd;
 }
 
+// ── Дневной лог fee (для отчёта бота и будущего графика) ────────────────────
+
+export interface FeeLogEntry {
+  time: number;
+  pendingUsd: number; // несобранные fee на момент замера
+  estDailyUsd: number; // расчётный темп: Σ доля × комиссии пула за 24ч
+  positionsUsd: number;
+  earnedUsd: number | null; // заработано с прошлого замера (Δ pending)
+  rebalanced: boolean; // pending упал — был ребаланс, оценка занижена
+}
+
+export function appendFeeLog(
+  wallet: string,
+  pendingUsd: number,
+  estDailyUsd: number,
+  positionsUsd: number,
+): FeeLogEntry {
+  const file = path.join(DATA_DIR, `feelog-${wallet}.json`);
+  const data = readJson<{ entries: FeeLogEntry[] }>(file, { entries: [] });
+  const prev = data.entries[data.entries.length - 1];
+  let earnedUsd: number | null = null;
+  let rebalanced = false;
+  if (prev) {
+    const d = pendingUsd - prev.pendingUsd;
+    if (d >= 0) {
+      earnedUsd = d;
+    } else {
+      // pending сбросился при закрытии позиции — считаем накопленное заново
+      earnedUsd = pendingUsd;
+      rebalanced = true;
+    }
+  }
+  const entry: FeeLogEntry = {
+    time: Math.floor(Date.now() / 1000),
+    pendingUsd,
+    estDailyUsd,
+    positionsUsd,
+    earnedUsd,
+    rebalanced,
+  };
+  data.entries.push(entry);
+  writeJson(file, data);
+  return entry;
+}
+
 // ── Скан истории ────────────────────────────────────────────────────────────
 
 // Дискриминаторы Anchor (sha256("global:<name>")[0..8]) инструкций Whirlpool.

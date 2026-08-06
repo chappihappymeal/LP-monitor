@@ -36,11 +36,12 @@ type config struct {
 	appURL    string
 	chromeWS  string
 	// Алерты о резких движениях цены:
-	product  string        // продукт Coinbase (ALERT_PRODUCT, SOL-USD)
-	fastPct  float64       // порог за 5 минут, % (ALERT_FAST_PCT, 1.5)
-	hourPct  float64       // порог за час, % (ALERT_HOUR_PCT, 4)
-	poll     time.Duration // период опроса (ALERT_POLL_SEC, 60с)
-	cooldown time.Duration // пауза между алертами одного типа (ALERT_COOLDOWN_MIN, 30м)
+	product    string        // продукт Coinbase (ALERT_PRODUCT, SOL-USD)
+	fastPct    float64       // порог за 5 минут, % (ALERT_FAST_PCT, 1.5)
+	hourPct    float64       // порог за час, % (ALERT_HOUR_PCT, 4)
+	poll       time.Duration // период опроса (ALERT_POLL_SEC, 60с)
+	cooldown   time.Duration // пауза между алертами одного типа (ALERT_COOLDOWN_MIN, 30м)
+	reportHour int           // час ежедневного отчёта о fee (REPORT_HOUR, 10; TZ контейнера)
 }
 
 func loadConfig() (config, error) {
@@ -69,6 +70,7 @@ func loadConfig() (config, error) {
 	c.hourPct = envFloat("ALERT_HOUR_PCT", 4)
 	c.poll = time.Duration(envFloat("ALERT_POLL_SEC", 60)) * time.Second
 	c.cooldown = time.Duration(envFloat("ALERT_COOLDOWN_MIN", 30)) * time.Minute
+	c.reportHour = int(envFloat("REPORT_HOUR", 10))
 	return c, nil
 }
 
@@ -111,6 +113,7 @@ func main() {
 	}
 
 	go priceWatcher(bot, cfg)
+	go dailyFeeReporter(bot, cfg)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -260,6 +263,68 @@ func priceWatcher(bot *tgbotapi.BotAPI, cfg config) {
 		check(5*time.Minute, cfg.fastPct, "fast", "5 мин")
 		check(60*time.Minute, cfg.hourPct, "hour", "час")
 	}
+}
+
+// ── Ежедневный отчёт о fee ──────────────────────────────────────────────────
+
+type feeEntry struct {
+	PendingUsd  float64  `json:"pendingUsd"`
+	EstDailyUsd float64  `json:"estDailyUsd"`
+	EarnedUsd   *float64 `json:"earnedUsd"`
+	Rebalanced  bool     `json:"rebalanced"`
+}
+
+// Каждый день в cfg.reportHour (по TZ контейнера) запрашивает у сервера замер
+// fee (он же пишется в data/feelog — сырьё для будущего графика) и шлёт итог.
+func dailyFeeReporter(bot *tgbotapi.BotAPI, cfg config) {
+	log.Printf("ежедневный отчёт о fee: %02d:00 (%s)", cfg.reportHour, time.Now().Format("MST"))
+	for {
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day(), cfg.reportHour, 0, 0, 0, now.Location())
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		time.Sleep(time.Until(next))
+
+		var e feeEntry
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			if e, err = fetchFeeReport(cfg); err == nil {
+				break
+			}
+			time.Sleep(2 * time.Minute)
+		}
+		if err != nil {
+			send(bot, tgbotapi.NewMessage(cfg.allowedID, "⚠️ Утренний отчёт о fee не собрался: "+err.Error()))
+			continue
+		}
+		var msg string
+		if e.EarnedUsd == nil {
+			msg = fmt.Sprintf("💰 Первый замер fee: pending $%.4f, расчётный темп $%.2f/день. Завтра будет дельта за сутки.",
+				e.PendingUsd, e.EstDailyUsd)
+		} else {
+			msg = fmt.Sprintf("💰 Fee за последние 24ч: $%.4f\nPending сейчас: $%.4f · расчётный темп: $%.2f/день",
+				*e.EarnedUsd, e.PendingUsd, e.EstDailyUsd)
+			if e.Rebalanced {
+				msg += "\n⚠️ Был ребаланс — pending обнулялся, цифра занижена."
+			}
+		}
+		send(bot, tgbotapi.NewMessage(cfg.allowedID, msg))
+	}
+}
+
+func fetchFeeReport(cfg config) (feeEntry, error) {
+	var e feeEntry
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Get(cfg.appURL + "/api/feereport?wallet=" + cfg.wallet)
+	if err != nil {
+		return e, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return e, fmt.Errorf("feereport %d", resp.StatusCode)
+	}
+	return e, json.NewDecoder(resp.Body).Decode(&e)
 }
 
 func fetchSpot(product string) (float64, error) {
