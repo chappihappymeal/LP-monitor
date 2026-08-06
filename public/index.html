@@ -615,6 +615,23 @@ function renderPosition(p, market) {
   const dailyFeesUsd = p.pool?.fees24hUsd != null && p.shareOfPoolPct != null
     ? p.pool.fees24hUsd * p.shareOfPoolPct / 100
     : null;
+  const dailyAprPct = dailyFeesUsd != null && p.valueUsd > 0
+    ? dailyFeesUsd / p.valueUsd * 100
+    : null;
+
+  // Импермалосс при падении цены до нижней границы (пары со стейбл-квотой):
+  // из состава восстанавливаем ликвидность L, на границе весь объём в токене A.
+  const il = (() => {
+    if (!STABLES.has(p.tokenB.symbol) || p.valueUsd == null) return null;
+    const A = p.tokenA.uiAmount, B = p.tokenB.uiAmount;
+    const P = p.currentPrice, Pl = p.lowerPrice, Pu = p.upperPrice;
+    if (P <= Pl) return { atBound: true };
+    const sP = Math.sqrt(Math.min(P, Pu)), sL = Math.sqrt(Pl), sU = Math.sqrt(Pu);
+    const L = P < Pu ? A / (1 / sP - 1 / sU) : B / (sP - sL);
+    const vLp = L * (1 / sL - 1 / sU) * Pl; // стоимость позиции на нижней границе
+    const vHodl = A * Pl + B; // если бы просто держали текущий состав
+    return { atBound: false, il: vLp - vHodl, drop: vLp - (A * P + B), vLp };
+  })();
 
   // Отметка цены входа на шкале
   const entry = entryPrice(p);
@@ -644,9 +661,15 @@ function renderPosition(p, market) {
     ${chartSection(p)}
 
     <div class="grid">
-      <div class="kv"><div class="lbl">Стоимость позиции</div>
+      ${il == null ? `<div class="kv"><div class="lbl">Стоимость позиции</div>
         <div class="val">${fmtUsd(p.valueUsd)}</div>
-        <div class="hint">${fmtNum(p.tokenA.uiAmount, 4)} ${esc(p.tokenA.symbol)} + ${fmtNum(p.tokenB.uiAmount, 2)} ${esc(p.tokenB.symbol)}</div></div>
+        <div class="hint">${fmtNum(p.tokenA.uiAmount, 4)} ${esc(p.tokenA.symbol)} + ${fmtNum(p.tokenB.uiAmount, 2)} ${esc(p.tokenB.symbol)}</div></div>`
+      : il.atBound ? `<div class="kv"><div class="lbl">IL на нижней границе</div>
+        <div class="val">—</div>
+        <div class="hint">цена уже у нижней границы — объём весь в ${esc(p.tokenA.symbol)}</div></div>`
+      : `<div class="kv"><div class="lbl">Убыток IL на нижней границе (${fmtNum(p.lowerPrice, 2)})</div>
+        <div class="val neg">${fmtSigned(il.il)}</div>
+        <div class="hint">стоимость позиции там: ${fmtUsd(il.vLp)} (${fmtSigned(il.drop)} к текущей)</div></div>`}
       <div class="kv"><div class="lbl">Pending yield (не собрано)</div>
         <div class="val ${cls(p.pendingYieldUsd)}">${fmtUsd(p.pendingYieldUsd, 4)}</div>
         <div class="hint">${fmtNum(p.pendingFees.tokenA.uiAmount, 6)} ${esc(p.tokenA.symbol)} + ${fmtNum(p.pendingFees.tokenB.uiAmount, 4)} ${esc(p.tokenB.symbol)}${rewards ? " · реварды: " + rewards : ""}</div></div>
@@ -664,7 +687,7 @@ function renderPosition(p, market) {
         <div class="hint">${pnl.ageDays != null ? "возраст: " + pnl.ageDays.toFixed(1) + " дн." : ""}</div></div>
       <div class="kv"><div class="lbl">Расчётный fee за 24ч</div>
         <div class="val ${cls(dailyFeesUsd)}">${fmtUsd(dailyFeesUsd, 4)}</div>
-        <div class="hint">сетевые комиссии: ${pnl.txFeesSol.toFixed(5)} SOL</div></div>
+        <div class="hint">дневной APR: ${fmtPct(dailyAprPct, 3)}</div></div>
       <div class="kv"><div class="lbl">PnL всего</div>
         <div class="val ${cls(pnl.totalPnlUsd)}">${fmtSigned(pnl.totalPnlUsd)}</div>
         <div class="hint">реализованная доходность: ${pnl.realizedAprPct == null ? "н/д" : pnl.realizedAprPct.toFixed(1) + "% годовых"}</div></div>
