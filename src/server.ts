@@ -215,6 +215,34 @@ app.get("/api/feereport", async (req, res) => {
   }
 });
 
+// Лёгкий статус позиций для позиционных алертов бота: где цена внутри диапазона.
+app.get("/api/rangestatus", async (req, res) => {
+  const wallet = req.query.wallet;
+  if (!isValidAddress(wallet)) {
+    res.status(400).json({ error: "Некорректный адрес кошелька" });
+    return;
+  }
+  try {
+    const positions = await fetchWalletPositions(rpc, wallet);
+    const out = [];
+    for (const pos of positions) {
+      const { view } = await hydratePosition(rpc, pos);
+      out.push({
+        positionAddress: view.positionAddress,
+        pair: view.pair,
+        lower: view.lowerPrice,
+        upper: view.upperPrice,
+        price: view.currentPrice,
+        status: view.status,
+      });
+    }
+    res.json({ positions: out, fetchedAt: Date.now() });
+  } catch (e: any) {
+    console.error("rangestatus error:", e);
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.post("/api/journal/comment", (req, res) => {
   const { wallet, signature, comment } = req.body ?? {};
   if (!isValidAddress(wallet) || typeof signature !== "string" || typeof comment !== "string") {

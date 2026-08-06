@@ -42,6 +42,10 @@ type config struct {
 	poll       time.Duration // период опроса (ALERT_POLL_SEC, 60с)
 	cooldown   time.Duration // пауза между алертами одного типа (ALERT_COOLDOWN_MIN, 30м)
 	reportHour int           // час ежедневного отчёта о fee (REPORT_HOUR, 10; TZ контейнера)
+	// Позиционный алерт «цена у края диапазона»:
+	edgePct       float64       // порог, % пути по диапазону (RANGE_EDGE_PCT, 75)
+	rangePoll     time.Duration // период опроса позиций (RANGE_POLL_MIN, 5м)
+	rangeCooldown time.Duration // повтор в той же зоне (RANGE_COOLDOWN_MIN, 120м)
 }
 
 func loadConfig() (config, error) {
@@ -71,6 +75,9 @@ func loadConfig() (config, error) {
 	c.poll = time.Duration(envFloat("ALERT_POLL_SEC", 60)) * time.Second
 	c.cooldown = time.Duration(envFloat("ALERT_COOLDOWN_MIN", 30)) * time.Minute
 	c.reportHour = int(envFloat("REPORT_HOUR", 10))
+	c.edgePct = envFloat("RANGE_EDGE_PCT", 75)
+	c.rangePoll = time.Duration(envFloat("RANGE_POLL_MIN", 5)) * time.Minute
+	c.rangeCooldown = time.Duration(envFloat("RANGE_COOLDOWN_MIN", 120)) * time.Minute
 	return c, nil
 }
 
@@ -114,6 +121,7 @@ func main() {
 
 	go priceWatcher(bot, cfg)
 	go dailyFeeReporter(bot, cfg)
+	go rangeWatcher(bot, cfg)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -325,6 +333,85 @@ func fetchFeeReport(cfg config) (feeEntry, error) {
 		return e, fmt.Errorf("feereport %d", resp.StatusCode)
 	}
 	return e, json.NewDecoder(resp.Body).Decode(&e)
+}
+
+// ── Позиционный алерт: цена у края диапазона ────────────────────────────────
+
+type rangePos struct {
+	PositionAddress string  `json:"positionAddress"`
+	Pair            string  `json:"pair"`
+	Lower           float64 `json:"lower"`
+	Upper           float64 `json:"upper"`
+	Price           float64 `json:"price"`
+}
+
+type zoneState struct {
+	zone string
+	at   time.Time
+}
+
+// Каждые rangePoll проверяет, где цена внутри диапазона каждой позиции.
+// Пробитие edgePct (вверх) или 100−edgePct (вниз) — алерт; повтор в той же
+// зоне не чаще rangeCooldown, возврат в середину сбрасывает состояние.
+func rangeWatcher(bot *tgbotapi.BotAPI, cfg config) {
+	log.Printf("монитор диапазона: края %d%%/%d%%, опрос %s",
+		int(100-cfg.edgePct), int(cfg.edgePct), cfg.rangePoll)
+	state := map[string]zoneState{}
+
+	for ; ; time.Sleep(cfg.rangePoll) {
+		var resp struct {
+			Positions []rangePos `json:"positions"`
+		}
+		client := &http.Client{Timeout: 3 * time.Minute}
+		r, err := client.Get(cfg.appURL + "/api/rangestatus?wallet=" + cfg.wallet)
+		if err != nil {
+			log.Printf("монитор диапазона: %v", err)
+			continue
+		}
+		if r.StatusCode != 200 {
+			r.Body.Close()
+			log.Printf("монитор диапазона: HTTP %d", r.StatusCode)
+			continue
+		}
+		err = json.NewDecoder(r.Body).Decode(&resp)
+		r.Body.Close()
+		if err != nil {
+			log.Printf("монитор диапазона: %v", err)
+			continue
+		}
+
+		for _, p := range resp.Positions {
+			if p.Upper <= p.Lower {
+				continue
+			}
+			pct := (p.Price - p.Lower) / (p.Upper - p.Lower) * 100
+			zone := "mid"
+			if pct >= cfg.edgePct {
+				zone = "upper"
+			} else if pct <= 100-cfg.edgePct {
+				zone = "lower"
+			}
+			prev := state[p.PositionAddress]
+			if zone == "mid" {
+				state[p.PositionAddress] = zoneState{zone: "mid"}
+				continue
+			}
+			if prev.zone == zone && time.Since(prev.at) < cfg.rangeCooldown {
+				continue
+			}
+			state[p.PositionAddress] = zoneState{zone: zone, at: time.Now()}
+			var txt string
+			if zone == "upper" {
+				txt = fmt.Sprintf("⚠️ %s: цена $%.2f прошла %.0f%% диапазона %.2f–%.2f (до верхней границы %+.1f%%).",
+					p.Pair, p.Price, pct, p.Lower, p.Upper, (p.Upper/p.Price-1)*100)
+			} else {
+				txt = fmt.Sprintf("⚠️ %s: цена $%.2f опустилась к %.0f%% диапазона %.2f–%.2f (до нижней границы %+.1f%%).",
+					p.Pair, p.Price, pct, p.Lower, p.Upper, (p.Lower/p.Price-1)*100)
+			}
+			send(bot, tgbotapi.NewMessage(cfg.allowedID,
+				txt+"\nПора думать, что делать — жми «"+btnStats+"»."))
+		}
+	}
 }
 
 func fetchSpot(product string) (float64, error) {
