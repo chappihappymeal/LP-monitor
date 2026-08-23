@@ -775,27 +775,40 @@ export function journalSummary(wallet: string): {
 
   const groups = groupEvents(j.events);
 
-  // Снимок баланса портфеля после каждого шага: кумулятивные SOL и стейблы
-  // (LP-потоки внутренние — общий портфель меняют только переводы, свапы и
-  // комиссии; токены без цены, как ORCA, в снимок не входят) по цене шага.
+  // Снимок баланса портфеля после каждого шага: реальный состав кошелька
+  // (все потоки — переводы, свапы, LP-события, сетевые fee) плюс открытые
+  // LP-позиции по их внесённому составу, всё по цене шага. Состав позиции
+  // между событиями меняется внутри пула (диапазонная ребалансировка) — эта
+  // разница реализуется в кошельке фактическими потоками close/decrease.
+  // Собранные fee (collect) идут в кошелёк, состав позиции не трогают.
+  // Токены без цены, как ORCA, в снимок не входят.
   let runSol = 0;
   let runStable = 0;
+  const posOpen = new Map<string, { sol: number; stable: number }>();
   const balanceAfter = new Map<string, number | null>();
   for (const e of groups) {
-    const transfer = e.type === "deposit" || e.type === "withdraw" || e.type === "swap" || e.type === "other";
-    if (transfer) {
-      runSol += e.solDelta;
-      runStable += stableOf(e);
-    } else {
-      // влитые в LP-группу свапы/пыль меняют состав портфеля
-      runSol += e.extraSol ?? 0;
-      runStable += e.extraStable ?? 0;
+    runSol += e.solDelta - (e.feeSol ?? 0);
+    runStable += stableOf(e);
+    if (LP_TYPES.has(e.type) && e.type !== "collect") {
+      const key = e.position ?? "?";
+      if (e.type === "close") posOpen.delete(key);
+      else {
+        // потоки самого LP-события, без влитых в группу свапов/пыли
+        const lpSol = e.solDelta - (e.extraSol ?? 0);
+        const lpStable = stableOf(e) - (e.extraStable ?? 0);
+        const p = posOpen.get(key) ?? { sol: 0, stable: 0 };
+        p.sol -= lpSol;
+        p.stable -= lpStable;
+        posOpen.set(key, p);
+      }
     }
-    runSol -= e.feeSol ?? 0;
-    balanceAfter.set(
-      e.signature,
-      e.priceUsd != null ? runSol * e.priceUsd + runStable : null,
-    );
+    let sol = runSol;
+    let stable = runStable;
+    for (const p of posOpen.values()) {
+      sol += p.sol;
+      stable += p.stable;
+    }
+    balanceAfter.set(e.signature, e.priceUsd != null ? sol * e.priceUsd + stable : null);
   }
 
   const deltas = computeDeltas(groups);
